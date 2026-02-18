@@ -58,3 +58,22 @@ tools:
     connect_timeout: 10.0    # Connection timeout in seconds (default: 10)
     execute_timeout: 60.0    # Tool execution timeout in seconds (default: 60)
     sse_read_timeout: 120.0  # SSE read timeout in seconds (default: 120)
+
+# ===== Feishu Skill Configuration =====
+# Feishu Bot integration - enables receiving and responding to messages via WebSocket
+# See: https://open.feishu.cn/ for creating applications
+feishu:
+  enabled: false  # Set to true to enable Feishu Skill
+  app_id: "cli_xxxxxxxxxxxxxxxxxxxxx"  # Your Feishu App ID (starts with cli_)
+  app_secret: ""  # Your Feishu App Secret
+  verification_token: ""  # Verification Token from Feishu open platform event subscription
+  # encrypt_key: ""  # Message encryption key (optional)
+
+  # Session configuration
+  max_sessions: 100  # Maximum concurrent user sessions
+  session_timeout: 3600  # Session timeout in seconds (default: 1 hour)
+
+  # Reconnection configuration
+  reconnect_initial_delay: 1.0  # Initial reconnect delay (seconds)
+  reconnect_max_delay: 30.0  # Maximum reconnect delay (seconds)
+  reconnect_max_retries: 10  # Maximum retry attempts

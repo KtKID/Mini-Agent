@@ -12,6 +12,7 @@ Examples:
 
 import argparse
 import asyncio
+import logging
 import platform
 import subprocess
 import sys
@@ -38,6 +39,20 @@ from mini_agent.tools.mcp_loader import cleanup_mcp_connections, load_mcp_tools_
 from mini_agent.tools.note_tool import SessionNoteTool
 from mini_agent.tools.skill_tool import create_skill_tools
 from mini_agent.utils import calculate_display_width
+
+# Import Long Connection Framework (optional)
+try:
+    from mini_agent.long_connection import LongConnectionRegistry
+    LONG_CONNECTION_AVAILABLE = True
+except ImportError:
+    LONG_CONNECTION_AVAILABLE = False
+
+# Import Feishu Skill (optional)
+try:
+    from mini_agent.skills.feishu_skill import FeishuSkill
+    FEISHU_SKILL_AVAILABLE = True
+except ImportError:
+    FEISHU_SKILL_AVAILABLE = False
 
 
 # ANSI color codes
@@ -609,6 +624,61 @@ async def run_agent(workspace_dir: Path, task: str = None):
         workspace_dir=str(workspace_dir),
     )
 
+    # 7.5. Initialize and connect Long Connection Skills (e.g., Feishu)
+    long_connection_registry = None
+    if LONG_CONNECTION_AVAILABLE and FEISHU_SKILL_AVAILABLE:
+        long_connection_registry = LongConnectionRegistry()
+        logger = logging.getLogger(__name__)
+
+        # Load Feishu Skill if enabled in config
+        if config.feishu and config.feishu.enabled:
+            try:
+                feishu_skill = FeishuSkill(config.feishu)
+
+                # Set up agent callback to handle incoming messages
+                async def feishu_message_handler(open_id: str, message: str) -> str:
+                    """Handle incoming Feishu message using the agent."""
+                    # Create a new agent instance for this session
+                    session_agent = Agent(
+                        llm_client=LLMClient(
+                            api_key=config.llm.api_key,
+                            provider=LLMProvider.ANTHROPIC if config.llm.provider.lower() == "anthropic" else LLMProvider.OPENAI,
+                            api_base=config.llm.api_base,
+                            model=config.llm.model,
+                        ),
+                        system_prompt=system_prompt,
+                        tools=tools,
+                        max_steps=config.agent.max_steps,
+                        workspace_dir=str(workspace_dir),
+                    )
+                    session_agent.add_user_message(message)
+                    await session_agent.run()
+                    # Get the last assistant message as response
+                    response = ""
+                    for msg in reversed(session_agent.messages):
+                        if msg.role == "assistant" and msg.content:
+                            response = msg.content
+                            break
+                    return response
+
+                feishu_skill.set_agent_callback(feishu_message_handler)
+                long_connection_registry.register(feishu_skill)
+                print(f"{Colors.GREEN}✅ Feishu Skill enabled{Colors.RESET}")
+                logger.info("FeishuSkill registered to LongConnectionRegistry")
+            except Exception as e:
+                print(f"{Colors.YELLOW}⚠️  Failed to load Feishu Skill: {e}{Colors.RESET}")
+                logger.error(f"Failed to load Feishu Skill: {e}")
+
+        # Connect all registered platforms
+        if len(long_connection_registry.platforms) > 0:
+            try:
+                await long_connection_registry.connect_all()
+                print(f"{Colors.GREEN}✅ Connected to {len(long_connection_registry.platforms)} long connection platform(s){Colors.RESET}")
+                logger.info(f"LongConnectionRegistry: Connected to {len(long_connection_registry.platforms)} platforms")
+            except Exception as e:
+                print(f"{Colors.YELLOW}⚠️  Failed to connect long connection platforms: {e}{Colors.RESET}")
+                logger.error(f"Failed to connect long connection platforms: {e}")
+
     # 8. Display welcome information
     if not task:
         print_banner()
@@ -837,7 +907,14 @@ async def run_agent(workspace_dir: Path, task: str = None):
             print(f"\n{Colors.RED}❌ Error: {e}{Colors.RESET}")
             print(f"{Colors.DIM}{'─' * 60}{Colors.RESET}\n")
 
-    # 11. Cleanup MCP connections
+    # 11. Cleanup long connection platforms
+    if LONG_CONNECTION_AVAILABLE and long_connection_registry is not None:
+        try:
+            await long_connection_registry.disconnect_all()
+        except Exception:
+            pass
+
+    # 12. Cleanup MCP connections
     await _quiet_cleanup()
 
 
