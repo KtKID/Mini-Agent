@@ -4,9 +4,16 @@ Provides unified configuration loading and management functionality
 """
 
 from pathlib import Path
+from typing import Optional
 
 import yaml
 from pydantic import BaseModel, Field
+
+# Import FeishuConfig if available (optional dependency)
+try:
+    from mini_agent.skills.feishu_skill.config import FeishuConfig
+except ImportError:
+    FeishuConfig = None
 
 
 class RetryConfig(BaseModel):
@@ -69,6 +76,7 @@ class Config(BaseModel):
     llm: LLMConfig
     agent: AgentConfig
     tools: ToolsConfig
+    feishu: Optional["FeishuConfig"] = None  # Optional Feishu Skill configuration
 
     @classmethod
     def load(cls) -> "Config":
@@ -157,10 +165,22 @@ class Config(BaseModel):
             mcp=mcp_config,
         )
 
+        # Parse Feishu configuration (optional)
+        feishu_config = None
+        if FeishuConfig is not None:
+            feishu_data = data.get("feishu", {})
+            if feishu_data:
+                try:
+                    feishu_config = FeishuConfig(**feishu_data)
+                except Exception as e:
+                    import logging
+                    logging.getLogger(__name__).warning(f"Failed to parse Feishu config: {e}")
+
         return cls(
             llm=llm_config,
             agent=agent_config,
             tools=tools_config,
+            feishu=feishu_config,
         )
 
     @staticmethod

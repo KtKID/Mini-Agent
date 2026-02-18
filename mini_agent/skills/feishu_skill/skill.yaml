@@ -1,0 +1,50 @@
+---
+name: feishu
+display_name: Feishu Skill
+description: |
+  Enables Mini Agent to receive and respond to messages from Feishu users
+  via WebSocket long connection. Provides multi-user session isolation and
+  automatic reconnection on connection loss.
+version: 1.0.0
+author: Mini Agent Team
+platform: feishu
+
+# Skill type: long_connection (not a chat skill)
+skill_type: long_connection
+
+# Configuration schema
+config:
+  enabled:
+    type: boolean
+    default: false
+    description: Enable or disable the Feishu Skill
+  app_id:
+    type: string
+    required: true
+    description: Feishu application ID (starts with cli_)
+  app_secret:
+    type: string
+    required: true
+    description: Feishu application secret
+
+# Dependencies
+dependencies:
+  - lark-oapi
+
+# Capabilities
+capabilities:
+  - message_receiving
+  - message_sending
+  - multi_user_sessions
+  - auto_reconnection
+
+# Events produced
+events:
+  - incoming_message
+  - connection_lost
+  - connection_restored
+
+# Permissions required
+permissions:
+  - im:message
+  - im:message:send_as_bot
