@@ -6,6 +6,7 @@ Supports multiple AI agents discussing the same topic with shared memory.
 
 import asyncio
 import os
+from enum import Enum
 from typing import Optional
 from dataclasses import dataclass
 
@@ -14,6 +15,13 @@ from mini_agent.agent_team.agent import Agent, AgentConfig, ModelProvider
 from mini_agent.agent_team.memory import Memory, Message
 from mini_agent.agent_team.personality import Personality
 from mini_agent.agent_team.providers import ProvidersConfig, ProviderConfig, PROVIDER_ENV_VARS
+
+
+class DiscussionMode(str, Enum):
+    """Discussion mode enumeration."""
+
+    CONCURRENT = "concurrent"  # 所有 Agent 同时响应
+    DEBATE = "debate"  # 串行辩论模式，一个一个发言
 
 
 @dataclass
@@ -35,7 +43,7 @@ class AgentTeam:
     - Create and manage chatrooms
     - Add/remove agents with different models and personalities
     - All agents share the same memory
-    - Concurrent agent responses with timeout handling
+    - Two discussion modes: concurrent (parallel) or debate (serial)
     """
 
     def __init__(
@@ -44,6 +52,7 @@ class AgentTeam:
         max_agents: int = 10,
         timeout: float = 30.0,
         providers_config: Optional[ProvidersConfig] = None,
+        discussion_mode: DiscussionMode = DiscussionMode.CONCURRENT,
     ):
         """
         Initialize AgentTeam with a chatroom.
@@ -53,11 +62,13 @@ class AgentTeam:
             max_agents: Maximum number of agents
             timeout: Response timeout in seconds
             providers_config: Provider configuration (optional)
+            discussion_mode: Discussion mode (concurrent or debate)
         """
         self._chatroom = Chatroom(name=name, max_members=max_agents)
         self._agents: dict[str, Agent] = {}
         self._timeout = timeout
         self._providers_config = providers_config
+        self._discussion_mode = discussion_mode
 
     @property
     def chatroom(self) -> Chatroom:
@@ -223,40 +234,55 @@ class AgentTeam:
         """List all agents."""
         return list(self._agents.values())
 
-    async def discuss(self, topic: str) -> list[AgentResponse]:
+    async def discuss(self, topic: str, add_topic_to_memory: bool = True) -> list[AgentResponse]:
         """
         Start a discussion on a topic.
 
-        All agents respond to the topic concurrently.
-
         Args:
             topic: Discussion topic
+            add_topic_to_memory: Whether to add topic as user message to memory.
+                                Set False for subsequent rounds on the same topic.
 
         Returns:
             List of agent responses
         """
-        # Add user message to memory
-        self._chatroom.memory.add_message(role="user", content=topic)
+        if add_topic_to_memory:
+            self._chatroom.memory.add_message(role="user", content=topic)
 
-        # Get messages for context
-        messages = self._chatroom.memory.get_messages_for_agent()
+        if self._discussion_mode == DiscussionMode.DEBATE:
+            return await self._discuss_debate()
+        else:
+            return await self._discuss_concurrent()
 
-        # Create tasks for all agents
+    async def _discuss_concurrent(self) -> list[AgentResponse]:
+        """
+        Concurrent discussion mode - all agents respond simultaneously.
+
+        Each agent gets its own view of messages (with self-identification).
+
+        Returns:
+            List of agent responses
+        """
+        # Create tasks for all agents, each with its own message view
         tasks = []
+        active_agents = []
         for agent in self._agents.values():
             if agent.is_active:
+                messages = self._chatroom.memory.get_messages_for_agent(
+                    current_agent_name=agent.name
+                )
                 tasks.append(self._call_agent(agent, messages))
+                active_agents.append(agent)
 
         # Wait for all responses
         responses = await asyncio.gather(*tasks, return_exceptions=True)
 
         # Process responses
         results = []
-        agent_list = list(self._agents.values())
         for i, response in enumerate(responses):
-            if i >= len(agent_list):
+            if i >= len(active_agents):
                 continue
-            agent = agent_list[i]
+            agent = active_agents[i]
             if isinstance(response, Exception):
                 results.append(AgentResponse(
                     agent_id=agent.id,
@@ -280,6 +306,69 @@ class AgentTeam:
                     agent_id=agent.id,
                     agent_name=agent.name,
                 )
+
+        return results
+
+    async def _discuss_debate(self) -> list[AgentResponse]:
+        """
+        Debate mode - agents respond one by one, seeing each other's responses.
+
+        Each agent responds sequentially, and their response is added to memory
+        before the next agent responds. This allows for true debate.
+
+        Returns:
+            List of agent responses
+        """
+        results = []
+
+        # Get active agents in order
+        agent_list = [agent for agent in self._agents.values() if agent.is_active]
+
+        # Each agent responds one by one
+        for agent in agent_list:
+            # Get current memory context with agent identity
+            messages = self._chatroom.memory.get_messages_for_agent(
+                current_agent_name=agent.name
+            )
+
+            try:
+                # Call agent
+                response = await asyncio.wait_for(
+                    agent.generate_response(messages),
+                    timeout=self._timeout
+                )
+
+                results.append(AgentResponse(
+                    agent_id=agent.id,
+                    agent_name=agent.name,
+                    content=response,
+                    success=True,
+                ))
+
+                # Add response to memory immediately so next agent sees it
+                self._chatroom.memory.add_message(
+                    role="agent",
+                    content=response,
+                    agent_id=agent.id,
+                    agent_name=agent.name,
+                )
+
+            except asyncio.TimeoutError:
+                results.append(AgentResponse(
+                    agent_id=agent.id,
+                    agent_name=agent.name,
+                    content="",
+                    success=False,
+                    error=f"Timeout after {self._timeout}s",
+                ))
+            except Exception as e:
+                results.append(AgentResponse(
+                    agent_id=agent.id,
+                    agent_name=agent.name,
+                    content="",
+                    success=False,
+                    error=str(e),
+                ))
 
         return results
 
@@ -333,3 +422,47 @@ def load_providers_from_config(config_path: str = "mini_agent/config/config.yaml
         import traceback
         traceback.print_exc()
         return None
+
+
+@dataclass
+class AgentTeamConfig:
+    """Agent Team configuration from config.yaml."""
+
+    discussion_mode: DiscussionMode = DiscussionMode.DEBATE
+    timeout: float = 30.0
+    max_agents: int = 10
+    providers_config: Optional[ProvidersConfig] = None
+
+
+def load_agent_team_config(config_path: str = "mini_agent/config/config.yaml") -> AgentTeamConfig:
+    """Load full agent team configuration from config.yaml."""
+    try:
+        import yaml
+        with open(config_path) as f:
+            data = yaml.safe_load(f)
+
+        agent_team_config = data.get("agent_team", {})
+
+        # Load discussion mode
+        mode_str = agent_team_config.get("discussion_mode", "debate")
+        discussion_mode = DiscussionMode.CONCURRENT if mode_str == "concurrent" else DiscussionMode.DEBATE
+
+        # Load timeout
+        timeout = agent_team_config.get("default_timeout", 30.0)
+
+        # Load max agents
+        max_agents = agent_team_config.get("max_agents_per_chatroom", 10)
+
+        # Load providers
+        providers_config = load_providers_from_config(config_path)
+
+        return AgentTeamConfig(
+            discussion_mode=discussion_mode,
+            timeout=timeout,
+            max_agents=max_agents,
+            providers_config=providers_config,
+        )
+    except Exception as e:
+        print(f"Error loading agent team config from {config_path}: {e}")
+        # Return defaults
+        return AgentTeamConfig()
