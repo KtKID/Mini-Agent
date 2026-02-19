@@ -1,0 +1,39 @@
+# Agent 配置文件
+#
+# personality 字段支持两种方式:
+#   1. 字符串引用 - 引用 personalities/ 目录下的模板文件 (不含 .yaml 后缀)
+#      例: personality: "professional" → 加载 personalities/professional.yaml
+#   2. 内联定义 - 直接写 name + system_prompt
+#      例: personality:
+#             name: "全能助手"
+#             system_prompt: "你是一个全能的AI助手。"
+#
+# 可用的性格模板:
+#   - professional     → 专业冷静 (personalities/professional.yaml)
+#   - chinese_expert   → 中文专家 (personalities/chinese_expert.yaml)
+#   - creative         → 创意型   (personalities/creative.yaml)
+
+agents:
+  - name: "deepseek专家"
+    provider_id: "deepseek"
+    model_name: "deepseek-chat"
+    personality: "professional"          # → personalities/professional.yaml
+
+  - name: "智谱助手"
+    provider_id: "bigmodel"
+    model_name: "glm-5"
+    personality: "chinese_expert"        # → personalities/chinese_expert.yaml
+
+  - name: "MiniMax专家"
+    provider_id: "minimax"
+    model_name: "MiniMax-M2.5"
+    personality:                          # 内联定义
+      name: "全能助手"
+      system_prompt: "你是一个全能的AI助手。"
+
+  - name: "lmstudio"
+    provider_id: "lmstudio"
+    model_name: "glm-4.7-flash"
+    personality:                          # 内联定义
+      name: "本地助手"
+      system_prompt: "你是一个本地部署的AI助手。"

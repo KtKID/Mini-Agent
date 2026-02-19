@@ -78,17 +78,38 @@ class Memory(BaseModel):
         """Get all messages."""
         return self.messages
 
-    def get_messages_for_agent(self) -> list[dict]:
+    def get_messages_for_agent(self, current_agent_name: Optional[str] = None) -> list[dict]:
         """
-        Get messages formatted for LLM context.
+        Get messages formatted for LLM context with proper role mapping.
+
+        Role mapping:
+        - "user" messages -> role="user" (unchanged)
+        - "agent" messages from current_agent_name -> role="assistant"
+        - "agent" messages from other agents -> role="user" with "[AgentName]: " prefix
+
+        Args:
+            current_agent_name: Name of the agent receiving these messages.
+                               Used to identify its own messages as "assistant" role.
 
         Returns:
-            List of message dicts with role and content
+            List of message dicts with valid LLM API roles (user/assistant).
         """
-        return [
-            {"role": msg.role, "content": msg.content}
-            for msg in self.messages
-        ]
+        result = []
+        for msg in self.messages:
+            if msg.role == "user":
+                result.append({"role": "user", "content": msg.content})
+            elif msg.role == "agent":
+                if current_agent_name and msg.agent_name == current_agent_name:
+                    result.append({"role": "assistant", "content": msg.content})
+                else:
+                    speaker = msg.agent_name or "Unknown"
+                    result.append({
+                        "role": "user",
+                        "content": f"[{speaker}]: {msg.content}"
+                    })
+            else:
+                result.append({"role": msg.role, "content": msg.content})
+        return result
 
     def clear(self) -> None:
         """Clear all messages."""

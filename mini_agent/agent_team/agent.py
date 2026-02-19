@@ -106,8 +106,31 @@ class Agent:
         return self.config.is_active
 
     def get_system_prompt(self) -> str:
-        """Get the system prompt from personality."""
-        return self.config.personality.system_prompt
+        """Get enhanced system prompt with identity and personality context."""
+        personality = self.config.personality
+        parts = []
+
+        # Identity
+        parts.append(f"你的名字是 {self.config.name}。")
+
+        # Role
+        if personality.name:
+            parts.append(f"你的角色定位是：{personality.name}。")
+
+        # Core prompt
+        parts.append(personality.system_prompt)
+
+        # Style
+        if personality.response_style:
+            parts.append(f"你的回复风格：{personality.response_style}。")
+
+        # Discussion format instruction
+        parts.append(
+            "在讨论中，其他参与者的发言会以 [姓名]: 内容 的格式呈现。"
+            "请以你自己的身份参与讨论，直接表达观点，无需重复你的名字。"
+        )
+
+        return "\n\n".join(parts)
 
     def get_model_config(self) -> dict:
         """
