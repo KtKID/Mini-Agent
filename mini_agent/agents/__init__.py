@@ -106,3 +106,21 @@ class AgentConfigLoader:
                 system_prompt=agent_def.personality.system_prompt,
                 response_style=agent_def.personality.response_style,
             )
+
+    def format_agent_list(self) -> tuple[str, list[AgentDefinition]]:
+        """Format a numbered list of available agents for display.
+
+        Returns:
+            Tuple of (formatted text, list of AgentDefinition in display order).
+        """
+        agents = self.load_agents()
+        if not agents:
+            return "暂无可用的 Agent。", []
+
+        lines = []
+        for i, agent_def in enumerate(agents, 1):
+            personality = self.resolve_personality(agent_def)
+            lines.append(
+                f"{i}. {agent_def.name} ({agent_def.model_name}) — {personality.name}"
+            )
+        return "\n".join(lines), agents

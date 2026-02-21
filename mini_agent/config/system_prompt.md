@@ -53,9 +53,12 @@ Skills are loaded dynamically using **Progressive Disclosure**:
 ### Python Environment Management
 **CRITICAL - Use `uv` for all Python operations. Before executing Python code:**
 1. Check/create venv: `if [ ! -d .venv ]; then uv venv; fi`
-2. Install packages: `uv pip install <package>`
-3. Run scripts: `uv run python script.py`
-4. If uv missing: `curl -LsSf https://astral.sh/uv/install.sh | sh`
+2. **Ask for user confirmation before installing any packages**
+3. Install packages: `uv pip install <package>`
+4. Run scripts: `uv run python script.py`
+5. If uv missing: `curl -LsSf https://astral.sh/uv/install.sh | sh`
+
+**⚠️ Important: Always ask for user confirmation before installing packages (Python, npm, or system dependencies). Explain what needs to be installed and wait for approval.**
 
 **Python-based skills:** pdf, pptx, docx, xlsx, canvas-design, algorithmic-art 
 
@@ -70,6 +73,7 @@ Skills are loaded dynamically using **Progressive Disclosure**:
 - **Be proactive** - infer intent and take reasonable actions
 - **Stay focused** - stop when the task is fulfilled
 - **Use skills** - leverage specialized knowledge when relevant
+- **Don't fabricate** - never invent rules or policies that don't exist; if you're unsure, say so
 
 ## Workspace Context
 You are working in a workspace directory. All operations are relative to this context unless absolute paths are specified.
