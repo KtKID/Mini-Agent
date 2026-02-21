@@ -19,7 +19,7 @@ import sys
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
@@ -635,10 +635,37 @@ async def run_agent(workspace_dir: Path, task: str = None):
             try:
                 feishu_skill = FeishuSkill(config.feishu)
 
+                # Initialize DiscussionHandler for multi-agent discussions
+                from mini_agent.agent_team.discussion_handler import DiscussionHandler
+                from mini_agent.agents import AgentConfigLoader
+                from mini_agent.agent_team import load_agent_team_config
+
+                team_config = load_agent_team_config()
+                agent_loader = AgentConfigLoader()
+                agent_loader.load_personality_templates()
+
+                discussion_handler = DiscussionHandler(
+                    providers_config=team_config.providers_config,
+                    loader=agent_loader,
+                    timeout=team_config.timeout,
+                )
+
                 # Set up agent callback to handle incoming messages
-                async def feishu_message_handler(open_id: str, message: str) -> str:
+                async def feishu_message_handler(open_id: str, message: str, send_fn, chat_id: str = "") -> Optional[str]:
                     """Handle incoming Feishu message using the agent."""
-                    # Create a new agent instance for this session
+                    msg_preview = message[:80] + "..." if len(message) > 80 else message
+                    session_id = chat_id or open_id
+                    print(f"\n{Colors.BRIGHT_CYAN}[Feishu]{Colors.RESET} {Colors.DIM}{open_id}{Colors.RESET} › {msg_preview}")
+
+                    # 讨论模式判断：用 chat_id 区分会话，避免群聊和私聊互相干扰
+                    if discussion_handler.is_active(session_id) or message.startswith("讨论 "):
+                        print(f"{Colors.BRIGHT_BLUE}[Feishu]{Colors.RESET} {Colors.DIM}讨论模式 (session={session_id[:16]}...){Colors.RESET}")
+                        await discussion_handler.handle_message(session_id, message, send_fn)
+                        print(f"{Colors.GREEN}[Feishu]{Colors.RESET} {Colors.DIM}讨论消息已发送{Colors.RESET}")
+                        return None  # DiscussionHandler 已通过 send_fn 发送消息
+
+                    # 普通模式 — 原有逻辑
+                    print(f"{Colors.BRIGHT_BLUE}[Feishu]{Colors.RESET} {Colors.DIM}Agent 处理中...{Colors.RESET}")
                     session_agent = Agent(
                         llm_client=LLMClient(
                             api_key=config.llm.api_key,
@@ -654,12 +681,12 @@ async def run_agent(workspace_dir: Path, task: str = None):
                     session_agent.add_user_message(message)
                     await session_agent.run()
                     # Get the last assistant message as response
-                    response = ""
                     for msg in reversed(session_agent.messages):
                         if msg.role == "assistant" and msg.content:
-                            response = msg.content
-                            break
-                    return response
+                            resp_preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
+                            print(f"{Colors.GREEN}[Feishu]{Colors.RESET} {Colors.DIM}回复: {resp_preview}{Colors.RESET}")
+                            return msg.content
+                    return "抱歉，我无法生成回复。"
 
                 feishu_skill.set_agent_callback(feishu_message_handler)
                 long_connection_registry.register(feishu_skill)
