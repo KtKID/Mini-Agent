@@ -1,0 +1,432 @@
+#!/usr/bin/env python3
+"""
+claude_chat.py - 格式化显示 Claude Code 的流式输出，支持多轮对话
+
+默认行为：自动继续上次 session（从 assets/session.json 读取最新的）。
+只有显式传 --new 才会创建新 session。
+
+用法:
+  python claude_chat.py "问题"                   # 继续上次 session（无历史则新建）
+  python claude_chat.py --new "问题"             # 强制新建 session
+  python claude_chat.py --resume <id> "问题"     # 继续指定 session
+  python claude_chat.py                          # 交互模式（自动恢复上次 session）
+
+交互模式内置命令:
+  /new        开启新对话（丢弃当前 session）
+  /session    显示当前 session ID
+  /sessions   列出所有已保存的 session
+  /help       显示帮助
+  exit / q    退出
+"""
+
+import sys
+import json
+import subprocess
+import shutil
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+
+
+# ── session.json 路径 ─────────────────────────────────────────────────────
+ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
+SESSION_FILE = ASSETS_DIR / "session.json"
+
+
+# ── ANSI 颜色 ──────────────────────────────────────────────────────────────
+class Color:
+    RESET   = "\033[0m"
+    BOLD    = "\033[1m"
+    DIM     = "\033[2m"
+    CYAN    = "\033[36m"
+    GREEN   = "\033[32m"
+    YELLOW  = "\033[33m"
+    BLUE    = "\033[34m"
+    MAGENTA = "\033[35m"
+    RED     = "\033[31m"
+    GRAY    = "\033[90m"
+
+
+# ── 每轮对话收集的数据 ──────────────────────────────────────────────────────
+@dataclass
+class Turn:
+    thinking:     list[str]  = field(default_factory=list)
+    text:         list[str]  = field(default_factory=list)
+    tool_uses:    list[dict] = field(default_factory=list)
+    tool_results: list[dict] = field(default_factory=list)
+    result:       str        = ""
+    session_id:   str        = ""
+    usage:        dict       = field(default_factory=dict)
+
+
+# ── session.json 读写 ──────────────────────────────────────────────────────
+def load_sessions() -> dict:
+    if SESSION_FILE.exists():
+        try:
+            return json.loads(SESSION_FILE.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}
+    return {}
+
+
+def save_sessions(sessions: dict) -> None:
+    ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+    SESSION_FILE.write_text(
+        json.dumps(sessions, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def update_session(session_id: str, prompt: str, result: str, usage: dict) -> None:
+    """每轮对话后更新 session 记录。"""
+    sessions = load_sessions()
+
+    # 从 result 截取前 200 字符作为最近回复摘要
+    snippet = result.strip()[:200] if result else ""
+
+    now = datetime.now().isoformat(timespec="seconds")
+
+    if session_id in sessions:
+        entry = sessions[session_id]
+        entry["last_prompt"] = prompt
+        entry["last_reply_snippet"] = snippet
+        entry["updated_at"] = now
+        entry["turns"] = entry.get("turns", 0) + 1
+        entry["total_tokens"] = entry.get("total_tokens", 0) + usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
+    else:
+        sessions[session_id] = {
+            "first_prompt": prompt,
+            "last_prompt": prompt,
+            "last_reply_snippet": snippet,
+            "summary": "",
+            "created_at": now,
+            "updated_at": now,
+            "turns": 1,
+            "total_tokens": usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
+        }
+
+    save_sessions(sessions)
+
+
+def get_latest_session() -> str | None:
+    """从 session.json 中取 updated_at 最新的 session_id。"""
+    sessions = load_sessions()
+    if not sessions:
+        return None
+    return max(sessions, key=lambda sid: sessions[sid].get("updated_at", ""))
+
+
+# ── 解析单行 stream-json ────────────────────────────────────────────────────
+def process_line(line: str, turn: Turn) -> None:
+    line = line.strip()
+    if not line:
+        return
+    try:
+        obj = json.loads(line)
+    except json.JSONDecodeError:
+        return
+
+    t = obj.get("type", "")
+
+    if t == "stream_event":
+        event = obj.get("event", {})
+        etype = event.get("type", "")
+
+        if etype == "content_block_start":
+            block = event.get("content_block", {})
+            if block.get("type") == "thinking":
+                print(f"\n{Color.DIM}💭 思考中…{Color.RESET}", flush=True)
+
+        elif etype == "content_block_delta":
+            delta = event.get("delta", {})
+            dtype = delta.get("type", "")
+            if dtype == "text_delta":
+                chunk = delta.get("text", "")
+                turn.text.append(chunk)
+                print(f"{Color.CYAN}{chunk}{Color.RESET}", end="", flush=True)
+            elif dtype == "thinking_delta":
+                chunk = delta.get("thinking", "")
+                turn.thinking.append(chunk)
+                print(f"{Color.GRAY}{chunk}{Color.RESET}", end="", flush=True)
+
+    elif t == "assistant":
+        for block in obj.get("content", []):
+            if block.get("type") == "tool_use":
+                turn.tool_uses.append(block)
+                _print_tool_use(block)
+
+    elif t == "tool_result":
+        turn.tool_results.append(obj)
+        _print_tool_result(obj)
+
+    elif t == "result":
+        turn.result     = obj.get("result", "")
+        turn.session_id = obj.get("session_id", "")
+        turn.usage      = obj.get("usage", {})
+
+
+def _print_tool_use(t: dict) -> None:
+    w = shutil.get_terminal_size().columns
+    print(f"\n{Color.BLUE}{'┄' * w}{Color.RESET}")
+    name = t.get("name", "?")
+    inp  = t.get("input", {})
+    print(f"{Color.BLUE}🔧 {Color.BOLD}{name}{Color.RESET}")
+    for k, v in inp.items():
+        v_str = str(v)
+        if len(v_str) > 200:
+            v_str = v_str[:200] + "…"
+        print(f"  {Color.GRAY}{k}: {Color.RESET}{v_str}")
+
+
+def _print_tool_result(r: dict) -> None:
+    w       = shutil.get_terminal_size().columns
+    content = r.get("content", "")
+    is_err  = r.get("is_error", False)
+    c       = Color.RED if is_err else Color.GREEN
+    label   = "❌ 工具错误" if is_err else "✅ 工具结果"
+    print(f"\n{c}{'┄' * w}{Color.RESET}")
+    print(f"{c}{label}{Color.RESET}")
+    snippet = str(content)[:400]
+    if len(str(content)) > 400:
+        snippet += f"\n{Color.GRAY}… (省略 {len(str(content)) - 400} 字符){Color.RESET}"
+    print(f"{Color.GRAY}{snippet}{Color.RESET}")
+
+
+# ── 调用 claude CLI ─────────────────────────────────────────────────────────
+def run_claude(prompt: str, session_id: str | None = None) -> Turn:
+    """
+    session_id=None   → 新 session
+    session_id="..."  → 通过 --resume 继续指定 session
+    """
+    cmd = [
+        "claude", "-p", prompt,
+        "--output-format", "stream-json",
+        "--verbose",
+        "--include-partial-messages",
+    ]
+    if session_id:
+        cmd += ["--resume", session_id]
+
+    w = shutil.get_terminal_size().columns
+    session_label = f"  {Color.GRAY}[session: {session_id[:8]}…]{Color.RESET}" if session_id else f"  {Color.GRAY}[新对话]{Color.RESET}"
+    print(f"\n{Color.YELLOW}{'═' * w}{Color.RESET}")
+    print(f"{Color.YELLOW}▶ {prompt}{Color.RESET}{session_label}")
+    print(f"{Color.YELLOW}{'═' * w}{Color.RESET}\n")
+
+    turn      = Turn()
+    in_stream = False
+
+    with subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        bufsize=1,
+    ) as proc:
+        for raw_line in proc.stdout:
+            stripped = raw_line.strip()
+            if stripped:
+                try:
+                    obj = json.loads(stripped)
+                    t   = obj.get("type", "")
+                    if t == "stream_event":
+                        event = obj.get("event", {})
+                        if event.get("type") == "content_block_delta":
+                            delta = event.get("delta", {})
+                            if delta.get("type") in ("text_delta", "thinking_delta"):
+                                in_stream = True
+                    elif t in ("assistant", "tool_result", "result") and in_stream:
+                        print()
+                        in_stream = False
+                except Exception:
+                    pass
+            process_line(raw_line, turn)
+
+    if in_stream:
+        print()
+
+    _print_summary(turn)
+
+    # 持久化 session 记录
+    if turn.session_id:
+        update_session(turn.session_id, prompt, turn.result, turn.usage)
+
+    return turn
+
+
+def _print_summary(turn: Turn) -> None:
+    w = shutil.get_terminal_size().columns
+    print(f"\n{Color.GRAY}{'─' * w}{Color.RESET}")
+    parts = []
+    if turn.thinking:
+        parts.append(f"thinking {len(''.join(turn.thinking))} 字符")
+    if turn.tool_uses:
+        names = [t.get("name", "?") for t in turn.tool_uses]
+        parts.append(f"工具: {', '.join(names)}")
+    if turn.usage:
+        inp = turn.usage.get("input_tokens", 0)
+        out = turn.usage.get("output_tokens", 0)
+        parts.append(f"tokens {inp}↑ {out}↓")
+    if turn.session_id:
+        parts.append(f"session: {turn.session_id[:8]}…")
+    if parts:
+        print(f"{Color.GRAY}{' | '.join(parts)}{Color.RESET}")
+    # 单次模式下输出完整 SESSION_ID 供 LLM 提取
+    if turn.session_id:
+        print(f"SESSION_ID: {turn.session_id}")
+
+
+# ── 内置命令处理 ────────────────────────────────────────────────────────────
+def handle_command(cmd: str, session_id: str | None) -> tuple[bool, str | None]:
+    """
+    返回 (handled, new_session_id)
+    handled=True 表示已处理，不需要发给 claude
+    """
+    cmd_lower = cmd.strip().lower()
+
+    if cmd_lower == "/new":
+        print(f"{Color.MAGENTA}✦ 已开启新对话{Color.RESET}")
+        return True, None
+
+    if cmd_lower == "/session":
+        if session_id:
+            print(f"{Color.GRAY}当前 session ID: {Color.RESET}{session_id}")
+        else:
+            print(f"{Color.GRAY}暂无 session（还未发送任何消息）{Color.RESET}")
+        return True, session_id
+
+    if cmd_lower == "/sessions":
+        sessions = load_sessions()
+        if not sessions:
+            print(f"{Color.GRAY}暂无保存的 session{Color.RESET}")
+        else:
+            print(f"\n{Color.BOLD}已保存的 session ({len(sessions)} 个):{Color.RESET}")
+            for sid, info in sessions.items():
+                active = " ◀" if sid == session_id else ""
+                summary = info.get("summary") or info.get("last_reply_snippet", "")
+                summary = summary[:60] + "…" if len(summary) > 60 else summary
+                turns = info.get("turns", 0)
+                updated = info.get("updated_at", "")
+                print(f"  {Color.CYAN}{sid[:8]}…{Color.RESET} [{turns}轮 {updated}] {summary}{Color.GREEN}{active}{Color.RESET}")
+            print()
+        return True, session_id
+
+    if cmd_lower == "/help":
+        print(
+            f"\n{Color.BOLD}内置命令:{Color.RESET}\n"
+            f"  {Color.CYAN}/new{Color.RESET}       开启新对话（丢弃当前 session）\n"
+            f"  {Color.CYAN}/session{Color.RESET}   显示当前 session ID\n"
+            f"  {Color.CYAN}/sessions{Color.RESET}  列出所有已保存的 session\n"
+            f"  {Color.CYAN}/help{Color.RESET}      显示此帮助\n"
+            f"  {Color.CYAN}exit / q{Color.RESET}   退出\n"
+        )
+        return True, session_id
+
+    return False, session_id
+
+
+# ── 参数解析 ────────────────────────────────────────────────────────────────
+def parse_args() -> tuple[str | None, str | None, bool]:
+    """
+    解析命令行参数。
+
+    返回 (resume_session_id, prompt, force_new)
+    - 都为 None 且 force_new=False → 交互模式（自动恢复最新 session）
+    - prompt 有值 → 单次模式
+    - force_new=True → 强制新建 session
+    """
+    args = sys.argv[1:]
+    resume_id = None
+    force_new = False
+    prompt_parts = []
+
+    i = 0
+    while i < len(args):
+        if args[i] in ("--resume", "-r") and i + 1 < len(args):
+            resume_id = args[i + 1]
+            i += 2
+        elif args[i] in ("--new", "-n"):
+            force_new = True
+            i += 1
+        else:
+            prompt_parts.append(args[i])
+            i += 1
+
+    prompt = " ".join(prompt_parts) if prompt_parts else None
+    return resume_id, prompt, force_new
+
+
+# ── 主入口 ──────────────────────────────────────────────────────────────────
+def main() -> None:
+    resume_id, prompt, force_new = parse_args()
+
+    if prompt:
+        # 单次问答模式
+        if force_new:
+            session_id = None
+        elif resume_id:
+            session_id = resume_id
+        else:
+            # 默认继续上次 session
+            session_id = get_latest_session()
+        run_claude(prompt, session_id=session_id)
+        return
+
+    # 交互模式
+    w = shutil.get_terminal_size().columns
+    print(f"{Color.BOLD}Claude Chat{Color.RESET}  "
+          f"{Color.GRAY}/new 新对话  /sessions 列表  /help 帮助  exit 退出{Color.RESET}")
+    print(f"{Color.GRAY}{'─' * w}{Color.RESET}\n")
+
+    # 自动恢复：--resume 优先，否则取最新 session（--new 则跳过）
+    if force_new:
+        session_id = None
+    elif resume_id:
+        session_id = resume_id
+    else:
+        session_id = get_latest_session()
+
+    if session_id:
+        sessions = load_sessions()
+        info = sessions.get(session_id, {})
+        summary = info.get("summary") or info.get("first_prompt", "")
+        print(f"{Color.GREEN}↻ 已恢复上次对话: {Color.RESET}{summary}")
+        print(f"{Color.GRAY}  session: {session_id[:8]}… | {info.get('turns', 0)} 轮{Color.RESET}\n")
+
+    turn_num = 0
+
+    while True:
+        if session_id:
+            hint = f"{Color.GRAY}[#{turn_num} {session_id[:6]}…]{Color.RESET} "
+        else:
+            hint = f"{Color.GRAY}[新]{Color.RESET} "
+
+        try:
+            user_input = input(f"{Color.BOLD}你{Color.RESET} {hint}").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n再见！")
+            break
+
+        if not user_input:
+            continue
+
+        if user_input.lower() in ("exit", "quit", "q", "退出"):
+            print("再见！")
+            break
+
+        # 内置命令
+        if user_input.startswith("/"):
+            handled, session_id = handle_command(user_input, session_id)
+            if handled:
+                continue
+
+        # 发送给 claude
+        turn = run_claude(user_input, session_id=session_id)
+
+        if turn.session_id:
+            session_id = turn.session_id
+        turn_num += 1
+
+
+if __name__ == "__main__":
+    main()
