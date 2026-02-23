@@ -57,6 +57,9 @@ class Turn:
     result:       str        = ""
     session_id:   str        = ""
     usage:        dict       = field(default_factory=dict)
+    # 逐 message 累计 token（从 message_delta 事件收集，比 result.usage 更可靠）
+    cumulative_input_tokens:  int = 0
+    cumulative_output_tokens: int = 0
 
 
 # ── session.json 读写 ──────────────────────────────────────────────────────
@@ -77,8 +80,9 @@ def save_sessions(sessions: dict) -> None:
     )
 
 
-def update_session(session_id: str, prompt: str, result: str, usage: dict) -> None:
-    """每轮对话后更新 session 记录。"""
+def update_session(session_id: str, prompt: str, result: str,
+                   input_tokens: int = 0, output_tokens: int = 0) -> None:
+    """每轮对话后更新 session 记录。使用累计 token 计数。"""
     sessions = load_sessions()
 
     # 从 result 截取前 200 字符作为最近回复摘要
@@ -92,7 +96,7 @@ def update_session(session_id: str, prompt: str, result: str, usage: dict) -> No
         entry["last_reply_snippet"] = snippet
         entry["updated_at"] = now
         entry["turns"] = entry.get("turns", 0) + 1
-        entry["total_tokens"] = entry.get("total_tokens", 0) + usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
+        entry["total_tokens"] = entry.get("total_tokens", 0) + input_tokens + output_tokens
     else:
         sessions[session_id] = {
             "first_prompt": prompt,
@@ -102,7 +106,7 @@ def update_session(session_id: str, prompt: str, result: str, usage: dict) -> No
             "created_at": now,
             "updated_at": now,
             "turns": 1,
-            "total_tokens": usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
+            "total_tokens": input_tokens + output_tokens,
         }
 
     save_sessions(sessions)
@@ -132,6 +136,12 @@ def process_line(line: str, turn: Turn) -> None:
         event = obj.get("event", {})
         etype = event.get("type", "")
 
+        # 尽早捕获 session_id（每个 stream_event 都可能带）
+        if not turn.session_id:
+            sid = obj.get("session_id", "")
+            if sid:
+                turn.session_id = sid
+
         if etype == "content_block_start":
             block = event.get("content_block", {})
             if block.get("type") == "thinking":
@@ -148,6 +158,12 @@ def process_line(line: str, turn: Turn) -> None:
                 chunk = delta.get("thinking", "")
                 turn.thinking.append(chunk)
                 print(f"{Color.GRAY}{chunk}{Color.RESET}", end="", flush=True)
+
+        elif etype == "message_delta":
+            # 每个 message 结束时带 usage，逐条累加
+            msg_usage = event.get("usage", {})
+            turn.cumulative_input_tokens  += msg_usage.get("input_tokens", 0)
+            turn.cumulative_output_tokens += msg_usage.get("output_tokens", 0)
 
     elif t == "assistant":
         for block in obj.get("content", []):
@@ -247,9 +263,14 @@ def run_claude(prompt: str, session_id: str | None = None) -> Turn:
 
     _print_summary(turn)
 
-    # 持久化 session 记录
+    # 持久化 session 记录（优先用累计 token，即使 result 消息未收到也能保存）
     if turn.session_id:
-        update_session(turn.session_id, prompt, turn.result, turn.usage)
+        result_text = turn.result or "".join(turn.text)
+        update_session(
+            turn.session_id, prompt, result_text,
+            input_tokens=turn.cumulative_input_tokens or turn.usage.get("input_tokens", 0),
+            output_tokens=turn.cumulative_output_tokens or turn.usage.get("output_tokens", 0),
+        )
 
     return turn
 
@@ -263,9 +284,10 @@ def _print_summary(turn: Turn) -> None:
     if turn.tool_uses:
         names = [t.get("name", "?") for t in turn.tool_uses]
         parts.append(f"工具: {', '.join(names)}")
-    if turn.usage:
-        inp = turn.usage.get("input_tokens", 0)
-        out = turn.usage.get("output_tokens", 0)
+    # 优先使用累计 token（更准确），降级到 result.usage
+    inp = turn.cumulative_input_tokens or turn.usage.get("input_tokens", 0)
+    out = turn.cumulative_output_tokens or turn.usage.get("output_tokens", 0)
+    if inp or out:
         parts.append(f"tokens {inp}↑ {out}↓")
     if turn.session_id:
         parts.append(f"session: {turn.session_id[:8]}…")
