@@ -67,8 +67,10 @@ class FeishuSkill(LongConnectionPlatform):
         # 会话管理器
         self._session_manager: Optional[SessionManager] = None
 
-        # Agent 回调
-        self._agent_callback: Optional[Callable[[str, str], Awaitable[str]]] = None
+        # Agent 回调: (open_id, content, send_fn, chat_id) -> Optional[str]
+        self._agent_callback: Optional[
+            Callable[[str, str, Callable, str], Awaitable[Optional[str]]]
+        ] = None
 
         # 消息队列
         self._message_queue: Queue = Queue()
@@ -91,17 +93,26 @@ class FeishuSkill(LongConnectionPlatform):
         return 0
 
     def set_agent_callback(
-        self, callback: Callable[[str, str], Awaitable[str]]
+        self,
+        callback: Callable[[str, str, Callable, str], Awaitable[Optional[str]]],
     ) -> None:
-        """设置 Agent 回调函数。"""
+        """设置 Agent 回调函数。
+
+        Args:
+            callback: async (open_id, content, send_fn, chat_id) -> Optional[str]
+                      返回 str 时由 FeishuSkill 发送；返回 None 表示 callback 已自行发送。
+        """
         self._agent_callback = callback
 
     def _ws_client_thread(self) -> None:
         """在独立线程中运行飞书 WebSocket 客户端。"""
         try:
             # 创建事件处理器（SDK 自动处理 verification token）
+            # 注意：WebSocket 长连接模式下 verification_token 不是必需的，
+            # 但 SDK 的 builder() 方法要求必须传入一个值
             handler_builder = EventDispatcherHandler.builder(
-                self.config.encrypt_key or ""
+                self.config.encrypt_key or "",
+                self.config.verification_token or ""
             )
 
             # 注册消息接收事件处理
@@ -197,6 +208,9 @@ class FeishuSkill(LongConnectionPlatform):
                     await self._handle_message_event(event_data)
                 else:
                     await asyncio.sleep(0.1)
+            except asyncio.CancelledError:
+                logger.info("FeishuSkill: [QUEUE] Task cancelled, stopping queue processor")
+                break
             except Exception as e:
                 logger.error(f"FeishuSkill: [QUEUE_ERROR] {e}")
                 await asyncio.sleep(0.5)
@@ -212,6 +226,7 @@ class FeishuSkill(LongConnectionPlatform):
             message_id = message.message_id if message else "unknown"
             content = message.content if message else ""
             chat_id = message.chat_id if message else ""
+            chat_type = getattr(message, "chat_type", "p2p") if message else "p2p"
 
             # 解析消息内容
             try:
@@ -220,8 +235,18 @@ class FeishuSkill(LongConnectionPlatform):
             except (json.JSONDecodeError, TypeError):
                 text = content
 
+            # 群聊消息：去除 @mention 标记（如 @_user_1）
+            if chat_type == "group" and message:
+                mentions = getattr(message, "mentions", None)
+                if mentions:
+                    for mention in mentions:
+                        key = getattr(mention, "key", None)
+                        if key:
+                            text = text.replace(key, "")
+                    text = text.strip()
+
             content_preview = text[:50] + "..." if len(text) > 50 else text
-            logger.info(f"FeishuSkill: [RECV] from={open_id} msg_id={message_id} content='{content_preview}'")
+            logger.info(f"FeishuSkill: [RECV] from={open_id} msg_id={message_id} chat_type={chat_type} content='{content_preview}'")
 
             # 放入队列
             self._message_queue.put({
@@ -229,6 +254,7 @@ class FeishuSkill(LongConnectionPlatform):
                 "message_id": message_id,
                 "content": text,
                 "chat_id": chat_id,
+                "chat_type": chat_type,
             })
 
         except Exception as e:
@@ -240,8 +266,9 @@ class FeishuSkill(LongConnectionPlatform):
         message_id = event_data["message_id"]
         content = event_data["content"]
         chat_id = event_data["chat_id"]
+        chat_type = event_data.get("chat_type", "p2p")
 
-        logger.info(f"FeishuSkill: [PROCESS] from={open_id} msg_id={message_id}")
+        logger.info(f"FeishuSkill: [PROCESS] from={open_id} msg_id={message_id} chat_type={chat_type}")
 
         # 获取或创建会话
         session = self._session_manager.get_or_create(open_id)
@@ -255,18 +282,38 @@ class FeishuSkill(LongConnectionPlatform):
                 await self.create_reaction(message_id, "LOVE")
                 logger.info(f"FeishuSkill: [PROCESSING] open_id={open_id} sent love reaction")
 
-                # 调用 Agent
-                response = await self._agent_callback(open_id, content)
-                response_preview = response[:50] + "..." if len(response) > 50 else response
-                logger.info(f"FeishuSkill: [AGENT_RESP] open_id={open_id} response='{response_preview}'")
+                # 创建 send_fn：群聊发到群，私聊发到用户
+                async def send_fn(text: str) -> None:
+                    if chat_type == "group" and chat_id:
+                        await self.send_to_chat(chat_id, text)
+                    else:
+                        await self.send_text(open_id, text)
 
-                # 发送回复
-                await self.send_text(open_id, response)
-                logger.info(f"FeishuSkill: [SENT] open_id={open_id}")
+                # 调用 Agent（传入 chat_id 用于区分会话上下文）
+                response = await self._agent_callback(open_id, content, send_fn, chat_id)
+
+                # 如果 callback 返回了文本，发送它（普通模式）
+                # 如果返回 None，说明 callback 已自行发送消息（讨论模式）
+                if response:
+                    response_preview = response[:50] + "..." if len(response) > 50 else response
+                    logger.info(f"FeishuSkill: [AGENT_RESP] open_id={open_id} response='{response_preview}'")
+                    if chat_type == "group" and chat_id:
+                        await self.send_to_chat(chat_id, response)
+                    else:
+                        await self.send_text(open_id, response)
+                    logger.info(f"FeishuSkill: [SENT] open_id={open_id}")
+                else:
+                    logger.info(f"FeishuSkill: [DELEGATED] open_id={open_id} callback handled sending")
 
             except Exception as e:
                 logger.error(f"FeishuSkill: [PROCESS_ERROR] {e}")
-                await self.send_text(open_id, "抱歉，处理您的消息时发生错误。")
+                try:
+                    if chat_type == "group" and chat_id:
+                        await self.send_to_chat(chat_id, "抱歉，处理您的消息时发生错误。")
+                    else:
+                        await self.send_text(open_id, "抱歉，处理您的消息时发生错误。")
+                except Exception:
+                    logger.error("FeishuSkill: [SEND_ERROR] Failed to send error message")
 
     # ==================== SDK 功能封装 ====================
 
@@ -305,6 +352,41 @@ class FeishuSkill(LongConnectionPlatform):
             return msg_id
         else:
             logger.error(f"FeishuSkill: [SEND_FAIL] {response.msg}")
+            raise RuntimeError(f"发送消息失败: {response.msg}")
+
+    async def send_to_chat(self, chat_id: str, text: str) -> str:
+        """
+        发送文本消息到会话（群聊或单聊，使用 chat_id）。
+
+        Args:
+            chat_id: 会话 ID
+            text: 消息内容
+
+        Returns:
+            消息 ID
+        """
+        text_preview = text[:50] + "..." if len(text) > 50 else text
+        logger.info(f"FeishuSkill: [SEND_CHAT] to={chat_id} text='{text_preview}'")
+
+        # 构建消息体
+        body = im.v1.CreateMessageRequestBody()
+        body.receive_id = chat_id
+        body.msg_type = "text"
+        body.content = json.dumps({"text": text})
+
+        request = im.v1.CreateMessageRequest.builder() \
+            .receive_id_type("chat_id") \
+            .request_body(body) \
+            .build()
+
+        response = self._im_service.v1.message.create(request)
+
+        if response.success():
+            msg_id = response.data.message_id
+            logger.info(f"FeishuSkill: [SEND_CHAT_OK] msg_id={msg_id} to={chat_id}")
+            return msg_id
+        else:
+            logger.error(f"FeishuSkill: [SEND_CHAT_FAIL] {response.msg}")
             raise RuntimeError(f"发送消息失败: {response.msg}")
 
     async def reply_message(self, message_id: str, text: str) -> str:

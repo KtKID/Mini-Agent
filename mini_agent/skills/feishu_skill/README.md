@@ -72,8 +72,10 @@ uv sync
 ```bash
 export FEISHU_APP_ID="cli_xxxxx"
 export FEISHU_APP_SECRET="xxxxx"
-export FEISHU_TEST_OPEN_ID="ou_xxxxx"  # 可选，用于测试
+# FEISHU_TEST_OPEN_ID 仅用于自动化测试，正常使用时不需要
 ```
+
+> **注意**：`FEISHU_TEST_OPEN_ID` 仅用于自动化测试脚本，用于向指定用户发送测试消息。正常运行时不需要配置。
 
 ### 3.3 config.yaml 配置
 
@@ -85,6 +87,7 @@ feishu:
   app_id: "cli_xxxxx"              # 应用 App ID
   app_secret: "xxxxx"              # 应用 App Secret
   # encrypt_key: ""                 # 加密密钥（可选）
+  verification_token: "xxxxx"       # 校验令牌（必填，从飞书开放平台获取）
   session_timeout: 300              # 会话超时时间（秒），默认 300
   max_sessions: 10                 # 最大并发会话数，默认 10
 ```
@@ -97,10 +100,11 @@ feishu:
 | app_id | 是 | 飞书应用 ID，以 `cli_` 开头 |
 | app_secret | 是 | 飞书应用密钥 |
 | encrypt_key | 否 | 消息加密密钥（可选） |
+| verification_token | 是 | 校验令牌（从飞书开放平台获取） |
 | session_timeout | 否 | 用户会话超时时间（秒），默认 300 |
 | max_sessions | 否 | 最大并发会话数，默认 10 |
 
-> 注意：飞书 SDK 会自动处理 verification token，用户无需配置。
+> 注意：verification_token 需要从飞书开放平台的「事件订阅」页面获取并配置。
 
 ## 4. 功能列表
 
@@ -134,11 +138,12 @@ FeishuSkill 支持设置 Agent 回调函数来处理接收到的消息：
 from mini_agent.skills.feishu_skill import FeishuSkill
 from mini_agent.skills.feishu_skill.config import FeishuConfig
 
-# 创建配置（SDK 自动处理 verification token）
+# 创建配置（需要配置 verification_token）
 config = FeishuConfig(
     enabled=True,
     app_id="cli_xxxxx",
-    app_secret="xxxxx"
+    app_secret="xxxxx",
+    verification_token="xxxxx"  # 从飞书开放平台获取
 )
 
 # 创建 Skill 实例
@@ -151,7 +156,7 @@ async def handle_message(user_id: str, message: str) -> str:
 
 skill.set_agent_callback(handle_message)
 
-# 连接飞书（SDK 自动处理 verification token）
+# 连接飞书
 await skill.connect()
 ```
 
@@ -308,9 +313,11 @@ async def create_reaction(message_id: str, emoji_id: str = "SMILE") -> bool:
 export FEISHU_APP_ID="cli_xxxxx"
 export FEISHU_APP_SECRET="xxxxx"
 
-# 可选 - 用于真实 API 测试
+# 必需 - 用于真实 API 测试（测试用户 open_id）
 export FEISHU_TEST_OPEN_ID="ou_xxxxx"
 ```
+
+> **注意**：`FEISHU_TEST_OPEN_ID` 是自动化测试专用的，需要配置为你的飞书用户 open_id，测试会向该用户发送真实消息。
 
 或者在运行时指定：
 
@@ -387,7 +394,7 @@ Feishu Skill 自动化测试
 - `app_id` 是否以 `cli_` 开头
 - `app_secret` 是否正确
 
-> 注意：飞书 SDK 会自动处理 verification token，无需用户配置。
+> 注意：verification_token 需要从飞书开放平台获取并配置。
 
 ### Q2: 收不到消息
 

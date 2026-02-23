@@ -35,6 +35,11 @@ class FeishuConfig(BaseModel):
         description="Message encryption key (optional)"
     )
 
+    verification_token: Optional[str] = Field(
+        default=None,
+        description="Verification token for callback URL validation (optional for WebSocket mode)"
+    )
+
     # Session configuration
     max_sessions: int = Field(
         default=100,
