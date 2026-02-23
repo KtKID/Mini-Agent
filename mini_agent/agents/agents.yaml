@@ -9,11 +9,22 @@
 #             system_prompt: "你是一个全能的AI助手。"
 #
 # 可用的性格模板:
-#   - professional     → 专业冷静 (personalities/professional.yaml)
-#   - chinese_expert   → 中文专家 (personalities/chinese_expert.yaml)
-#   - creative         → 创意型   (personalities/creative.yaml)
+#   基础型:
+#     - professional     → 专业冷静 (personalities/professional.yaml)
+#     - chinese_expert   → 中文专家 (personalities/chinese_expert.yaml)
+#     - creative         → 创意型   (personalities/creative.yaml)
+#   技术型:
+#     - technical_expert → 技术专家 (personalities/technical_expert.yaml)
+#     - fullstack_dev    → 全栈开发者 (personalities/fullstack_dev.yaml)
+#     - architect        → 系统架构师 (personalities/architect.yaml)
+#     - devops           → 运维工程师 (personalities/devops.yaml)
+#     - data_engineer    → 数据工程师 (personalities/data_engineer.yaml)
+#     - ml_engineer      → 算法工程师 (personalities/ml_engineer.yaml)
+#     - security_expert  → 安全专家 (personalities/security_expert.yaml)
+#     - tech_instructor  → 技术讲师 (personalities/tech_instructor.yaml)
 
 agents:
+  # 原有 Agent 配置
   - name: "deepseek专家"
     provider_id: "deepseek"
     model_name: "deepseek-chat"
@@ -37,3 +48,50 @@ agents:
     personality:                          # 内联定义
       name: "本地助手"
       system_prompt: "你是一个本地部署的AI助手。"
+
+  # 技术型 Agent 配置示例
+  - name: "技术顾问"
+    provider_id: "deepseek"
+    model_name: "deepseek-chat"
+    personality: "technical_expert"        # → 技术专家
+
+  - name: "全栈助手"
+    provider_id: "bigmodel"
+    model_name: "glm-5"
+    personality: "fullstack_dev"           # → 全栈开发者
+
+  - name: "架构大师"
+    provider_id: "minimax"
+    model_name: "MiniMax-M2.5"
+    personality: "architect"               # → 系统架构师
+
+  - name: "运维助手"
+    provider_id: "deepseek"
+    model_name: "deepseek-chat"
+    personality: "devops"                  # → 运维工程师
+
+  - name: "数据专家"
+    provider_id: "bigmodel"
+    model_name: "glm-5"
+    personality: "data_engineer"           # → 数据工程师
+
+  - name: "AI 工程师"
+    provider_id: "minimax"
+    model_name: "MiniMax-M2.5"
+    personality: "ml_engineer"             # → 算法工程师
+
+  - name: "安全卫士"
+    provider_id: "deepseek"
+    model_name: "deepseek-chat"
+    personality: "security_expert"         # → 安全专家
+
+  - name: "技术讲师"
+    provider_id: "bigmodel"
+    model_name: "glm-5"
+    personality: "tech_instructor"         # → 技术讲师
+
+  # ===== Moltbook 讨论专用 Agent =====
+  - name: "Moltbook技术讲师"
+    provider_id: "minimax"
+    model_name: "MiniMax-M2.5"
+    personality: "fullstack_dev"           # → 全栈开发者
