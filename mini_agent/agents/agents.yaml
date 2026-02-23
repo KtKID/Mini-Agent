@@ -27,11 +27,6 @@
 
 agents:
   # 原有 Agent 配置
-#   - professional     → 专业冷静 (personalities/professional.yaml)
-#   - chinese_expert   → 中文专家 (personalities/chinese_expert.yaml)
-#   - creative         → 创意型   (personalities/creative.yaml)
-
-agents:
   - name: "deepseek专家"
     provider_id: "deepseek"
     model_name: "deepseek-chat"
