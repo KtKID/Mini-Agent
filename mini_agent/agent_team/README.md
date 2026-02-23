@@ -40,6 +40,15 @@ python run_discussion.py --topic "如何设计高并发系统?" --rounds 2
 
 ```yaml
 agent_team:
+  # 讨论模式: concurrent (并发) 或 debate (串行辩论)
+  discussion_mode: "debate"
+
+  # 默认超时时间（秒）
+  default_timeout: 30.0
+
+  # 每个聊天室最大 Agent 数量
+  max_agents_per_chatroom: 10
+
   providers:
     # Anthropic (Claude)
     anthropic:
@@ -112,16 +121,17 @@ agent_team:
 
 ```python
 import asyncio
-from mini_agent.agent_team import AgentTeam, load_providers_from_config
+from mini_agent.agent_team import AgentTeam, DiscussionMode, load_providers_from_config
 
 # 从配置文件加载 providers
 providers_config = load_providers_from_config()
 
-# 创建聊天室
+# 创建聊天室（默认辩论模式）
 team = AgentTeam(
     name="技术评审",
     max_agents=10,
     timeout=60.0,
+    discussion_mode=DiscussionMode.DEBATE,  # 或 DiscussionMode.CONCURRENT
     providers_config=providers_config
 )
 
@@ -220,7 +230,8 @@ team.add_agent(
 async def multi_round_discussion(team, topic, rounds=3):
     for round_num in range(1, rounds + 1):
         print(f"\n=== 第 {round_num} 轮 ===")
-        results = await team.discuss(topic)
+        # 第一轮将话题加入 Memory，后续轮次不再重复添加
+        results = await team.discuss(topic, add_topic_to_memory=(round_num == 1))
 
         for r in results:
             if r.success:
@@ -237,12 +248,16 @@ asyncio.run(multi_round_discussion(team, "分布式系统设计", rounds=3))
 
 ```
 AgentTeam
-├── Chatroom (聊天室)
-│   └── Memory (共享内存)
-│       └── Message (消息)
+├── ChatroomManager (聊天室管理器)
+│   └── Chatroom (聊天室)
+│       └── Memory (共享内存)
+│           └── Message (消息)
 ├── Agent (智能体)
 │   ├── AgentConfig (配置)
 │   └── Personality (性格)
+├── DiscussionHandler (讨论处理器)
+├── DiscussionMode (讨论模式枚举)
+├── AgentTeamConfig (团队配置)
 └── Provider 配置
     └── ProviderConfig
 ```
@@ -252,13 +267,19 @@ AgentTeam
 | 组件 | 说明 |
 |------|------|
 | AgentTeam | 主入口，管理聊天室和 Agent 列表 |
+| ChatroomManager | 聊天室管理器，管理多个 Chatroom |
 | Chatroom | 聊天室，包含共享 Memory |
 | Memory | 消息存储，所有 Agent 共享 |
 | Agent | 单个 AI Agent，包含模型配置和性格 |
 | Personality | Agent 性格配置（名称、提示词、回复风格） |
 | ProviderConfig | 模型提供商配置（API URL、Key） |
+| DiscussionHandler | 讨论处理器，处理飞书消息驱动的状态机 |
+| DiscussionMode | 讨论模式枚举 (CONCURRENT/DEBATE) |
+| AgentTeamConfig | 团队配置类 (discussion_mode, timeout, max_agents) |
 
 ### 6.3 数据流
+
+#### 并发模式 (CONCURRENT)
 
 1. 用户发起讨论 (`team.discuss(topic)`)
 2. 话题作为用户消息存入 Memory
@@ -267,7 +288,45 @@ AgentTeam
 5. 响应存入 Memory
 6. 返回所有 Agent 的响应结果
 
-## 7. 运行测试
+#### 辩论模式 (DEBATE)
+
+1. 用户发起讨论 (`team.discuss(topic)`)
+2. 话题作为用户消息存入 Memory
+3. Agent 按顺序串行响应（而非并发）
+4. 第一个 Agent 生成响应后，响应立即写入 Memory
+5. 下一个 Agent 能看到前一个 Agent 的响应后，再生成自己的响应
+6. 循环直到所有 Agent 响应完毕
+7. 返回所有 Agent 的响应结果
+
+辩论模式实现真正的逐轮辩论效果，每个 Agent 都能看到前一个 Agent 的观点。
+
+## 7. 飞书集成
+
+### 7.1 DiscussionHandler 讨论处理器
+
+`discussion_handler.py` 模块实现了飞书消息驱动的讨论状态机：
+
+- `DiscussionHandler` - 讨论处理器
+- `DiscussionState` - 讨论状态枚举 (IDLE, SELECTING, DISCUSSING)
+- `UserDiscussionSession` - 用户讨论会话管理
+
+触发流程：`讨论 {话题}` → SELECTING → DISCUSSING
+
+### 7.2 add_agent_legacy 方法
+
+旧版添加 Agent 方法，已废弃但仍可使用：
+
+```python
+# 使用旧版方法添加 Agent（已废弃）
+agent = team.add_agent_legacy(
+    name="旧版Agent",
+    provider="anthropic",
+    model="claude-sonnet-4-20250514",
+    system_prompt="你的系统提示词"
+)
+```
+
+## 8. 运行测试
 
 ```bash
 # 运行单元测试
@@ -283,14 +342,15 @@ Agent Team 自动化测试
 ==================================================
 ```
 
-## 8. 常见问题
+## 9. 常见问题
 
 ### Q1: 如何添加新的模型提供商?
 
 在以下文件中添加配置：
 
-1. `providers.py` - 添加 ProviderConfig 和环境变量映射
-2. `__init__.py` - 添加 provider_map 映射
+1. `providers.py` - 添加 ProviderConfig
+2. `providers.py` - 在 `PROVIDER_ENV_VARS` 字典中添加环境变量映射
+3. `__init__.py` - 在 `provider_map` 中添加映射
 
 ### Q2: 本地模型连接失败?
 
@@ -315,7 +375,7 @@ agent.deactivate()  # 停用
 agent.activate()   # 重新激活
 ```
 
-## 9. 更新日志
+## 10. 更新日志
 
 ### v1.0 (2026-02-19)
 
