@@ -6,7 +6,7 @@ Manages user sessions for the Feishu Skill.
 
 import asyncio
 import time
-from typing import Dict, Optional
+from typing import Any, Callable, Dict, Optional
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -22,10 +22,11 @@ class FeishuSession:
 
     Each session maintains an independent conversation with the user's Agent.
     """
-    open_id: str
+    open_id: str  # 实际存的是 session_id (chat_id or open_id)
     created_at: float = field(default_factory=time.time)
     last_activity: float = field(default_factory=time.time)
     message_count: int = 0
+    agent: Any = None  # Agent 实例，由 SessionManager 通过 factory 创建
 
 
 class SessionManager:
@@ -38,26 +39,16 @@ class SessionManager:
     - Concurrent session management
     """
 
-    def __init__(
-        self,
-        config,
-        llm_client=None,
-        tools=None,
-        system_prompt: str = "",
-    ):
+    def __init__(self, config, agent_factory: Optional[Callable] = None):
         """
         Initialize the session manager.
 
         Args:
             config: FeishuConfig instance
-            llm_client: Shared LLM client
-            tools: Shared tools list
-            system_prompt: Shared system prompt
+            agent_factory: Optional callable that creates a new Agent instance
         """
         self.config = config
-        self.llm_client = llm_client
-        self.tools = tools or []
-        self.system_prompt = system_prompt
+        self._agent_factory = agent_factory
 
         self._sessions: Dict[str, FeishuSession] = {}
         self._cleanup_task: Optional[asyncio.Task] = None
@@ -73,37 +64,34 @@ class SessionManager:
         """Get the maximum allowed sessions."""
         return self.config.max_sessions
 
-    def get_or_create(self, open_id: str) -> FeishuSession:
+    def get_or_create(self, session_id: str) -> FeishuSession:
         """
         Get an existing session or create a new one.
 
         Args:
-            open_id: User's Feishu open_id
+            session_id: Session identifier (chat_id or open_id)
 
         Returns:
             FeishuSession instance
         """
-        # Check if session exists
-        if open_id in self._sessions:
-            session = self._sessions[open_id]
+        if session_id in self._sessions:
+            session = self._sessions[session_id]
             session.last_activity = time.time()
-            logger.debug(f"SessionManager: Retrieved existing session for {open_id}")
             return session
 
-        # Check if we've hit the limit
         if self.session_count >= self.max_sessions:
-            logger.warning(
-                f"SessionManager: Max sessions ({self.max_sessions}) reached"
-            )
             raise RuntimeError(
                 f"Maximum concurrent sessions ({self.max_sessions}) reached"
             )
 
-        # Create new session
-        session = FeishuSession(open_id=open_id)
-        self._sessions[open_id] = session
+        session = FeishuSession(open_id=session_id)
+        if self._agent_factory:
+            session.agent = self._agent_factory()
+            logger.info(f"SessionManager: Created new session with Agent for {session_id}")
+        else:
+            logger.info(f"SessionManager: Created new session (no agent) for {session_id}")
 
-        logger.info(f"SessionManager: Created new session for {open_id}")
+        self._sessions[session_id] = session
         return session
 
     def remove(self, open_id: str) -> bool:

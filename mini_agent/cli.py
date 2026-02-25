@@ -650,6 +650,23 @@ async def run_agent(workspace_dir: Path, task: str = None):
                     timeout=team_config.timeout,
                 )
 
+                # Agent 工厂函数：每个 session 创建独立的 Agent 实例
+                def make_agent():
+                    return Agent(
+                        llm_client=LLMClient(
+                            api_key=config.llm.api_key,
+                            provider=LLMProvider.ANTHROPIC if config.llm.provider.lower() == "anthropic" else LLMProvider.OPENAI,
+                            api_base=config.llm.api_base,
+                            model=config.llm.model,
+                        ),
+                        system_prompt=system_prompt,
+                        tools=tools,
+                        max_steps=config.agent.max_steps,
+                        workspace_dir=str(workspace_dir),
+                    )
+
+                feishu_skill.set_agent_factory(make_agent)
+
                 # Set up agent callback to handle incoming messages
                 async def feishu_message_handler(open_id: str, message: str, send_fn, chat_id: str = "") -> Optional[str]:
                     """Handle incoming Feishu message using the agent."""
@@ -664,24 +681,17 @@ async def run_agent(workspace_dir: Path, task: str = None):
                         print(f"{Colors.GREEN}[Feishu]{Colors.RESET} {Colors.DIM}讨论消息已发送{Colors.RESET}")
                         return None  # DiscussionHandler 已通过 send_fn 发送消息
 
-                    # 普通模式 — 原有逻辑
+                    # 普通模式 — Agent 已由 SessionManager 创建并缓存
                     print(f"{Colors.BRIGHT_BLUE}[Feishu]{Colors.RESET} {Colors.DIM}Agent 处理中...{Colors.RESET}")
-                    session_agent = Agent(
-                        llm_client=LLMClient(
-                            api_key=config.llm.api_key,
-                            provider=LLMProvider.ANTHROPIC if config.llm.provider.lower() == "anthropic" else LLMProvider.OPENAI,
-                            api_base=config.llm.api_base,
-                            model=config.llm.model,
-                        ),
-                        system_prompt=system_prompt,
-                        tools=tools,
-                        max_steps=config.agent.max_steps,
-                        workspace_dir=str(workspace_dir),
-                    )
-                    session_agent.add_user_message(message)
-                    await session_agent.run()
+                    session = feishu_skill._session_manager.get_or_create(session_id)
+
+                    if not session.agent:
+                        return "抱歉，Agent 未初始化。"
+
+                    session.agent.add_user_message(message)
+                    await session.agent.run()
                     # Get the last assistant message as response
-                    for msg in reversed(session_agent.messages):
+                    for msg in reversed(session.agent.messages):
                         if msg.role == "assistant" and msg.content:
                             resp_preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
                             print(f"{Colors.GREEN}[Feishu]{Colors.RESET} {Colors.DIM}回复: {resp_preview}{Colors.RESET}")

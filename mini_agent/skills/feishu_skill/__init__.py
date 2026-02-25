@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import threading
+import time
 from typing import Optional, Callable, Awaitable
 from queue import Queue
 
@@ -96,6 +97,10 @@ class FeishuSkill(LongConnectionPlatform):
         """设置 Agent 回调函数。"""
         self._agent_callback = callback
 
+    def set_agent_factory(self, factory: Callable) -> None:
+        """设置 Agent 工厂函数，由 SessionManager 在创建 session 时调用。"""
+        self._agent_factory = factory
+
     def _ws_client_thread(self) -> None:
         """在独立线程中运行飞书 WebSocket 客户端。"""
         try:
@@ -142,7 +147,10 @@ class FeishuSkill(LongConnectionPlatform):
 
         try:
             # 初始化会话管理器
-            self._session_manager = SessionManager(config=self.config)
+            self._session_manager = SessionManager(
+                config=self.config,
+                agent_factory=getattr(self, '_agent_factory', None),
+            )
 
             # 启动 WebSocket 线程
             self._ws_thread = threading.Thread(
@@ -243,32 +251,27 @@ class FeishuSkill(LongConnectionPlatform):
 
         logger.info(f"FeishuSkill: [PROCESS] from={open_id} msg_id={message_id}")
 
-        # 获取或创建会话
-        session = self._session_manager.get_or_create(open_id)
+        session_id = chat_id or open_id
+        session = self._session_manager.get_or_create(session_id)
         session.message_count += 1
-        session.last_activity = asyncio.get_event_loop().time()
+        session.last_activity = time.time()
 
-        # 如果有 Agent 回调
         if self._agent_callback:
             try:
-                # 发送处理中状态 - 使用送心表情回复
                 await self.create_reaction(message_id, "LOVE")
-                logger.info(f"FeishuSkill: [PROCESSING] open_id={open_id} sent love reaction")
 
-                # 调用 Agent
-                response = await self._agent_callback(open_id, content)
-                response_preview = response[:50] + "..." if len(response) > 50 else response
-                logger.info(f"FeishuSkill: [AGENT_RESP] open_id={open_id} response='{response_preview}'")
+                async def send_fn(text: str):
+                    await self.send_text(open_id, text)
 
-                # 发送回复
-                await self.send_text(open_id, response)
-                logger.info(f"FeishuSkill: [SENT] open_id={open_id}")
+                response = await self._agent_callback(open_id, content, send_fn, chat_id)
+
+                if response:
+                    await self.send_text(open_id, response)
+                    logger.info(f"FeishuSkill: [SENT] open_id={open_id}")
 
             except Exception as e:
                 logger.error(f"FeishuSkill: [PROCESS_ERROR] {e}")
                 await self.send_text(open_id, "抱歉，处理您的消息时发生错误。")
-
-    # ==================== SDK 功能封装 ====================
 
     # ==================== SDK 功能封装 ====================
 
