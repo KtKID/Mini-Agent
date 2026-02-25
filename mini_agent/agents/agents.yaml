@@ -22,6 +22,8 @@
 #     - ml_engineer      → 算法工程师 (personalities/ml_engineer.yaml)
 #     - security_expert  → 安全专家 (personalities/security_expert.yaml)
 #     - tech_instructor  → 技术讲师 (personalities/tech_instructor.yaml)
+#   领域型:
+#     - vocal_analyst    → 声乐科学分析专家 (personalities/vocal_analyst.yaml)
 
 agents:
   # 原有 Agent 配置
@@ -95,3 +97,9 @@ agents:
     provider_id: "minimax"
     model_name: "MiniMax-M2.5"
     personality: "fullstack_dev"           # → 全栈开发者
+
+  # ===== 声乐科学分析专家 =====
+  - name: "声乐分析专家"
+    provider_id: "minimax"
+    model_name: "MiniMax-M2.5"
+    personality: "vocal_analyst"             # → 声乐科学分析专家
