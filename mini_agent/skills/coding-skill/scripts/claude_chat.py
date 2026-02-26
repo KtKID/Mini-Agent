@@ -235,7 +235,7 @@ def run_claude(prompt: str, session_id: str | None = None) -> Turn:
     with subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
         text=True,
         bufsize=1,
     ) as proc:
@@ -258,8 +258,22 @@ def run_claude(prompt: str, session_id: str | None = None) -> Turn:
                     pass
             process_line(raw_line, turn)
 
+        # 读取 stderr
+        stderr_output = proc.stderr.read() or ""
+
     if in_stream:
         print()
+
+    # 检查进程退出状态
+    if proc.returncode != 0:
+        err_snippet = stderr_output.strip()[:500] if stderr_output else "(无 stderr 输出)"
+        print(f"\n{Color.RED}❌ claude 进程异常退出 (code={proc.returncode}){Color.RESET}")
+        print(f"{Color.RED}{err_snippet}{Color.RESET}")
+        if not turn.result:
+            turn.result = f"[错误] claude 进程退出码 {proc.returncode}: {err_snippet}"
+    elif stderr_output and stderr_output.strip():
+        warn_snippet = stderr_output.strip()[:200]
+        print(f"\n{Color.YELLOW}⚠ stderr: {warn_snippet}{Color.RESET}")
 
     _print_summary(turn)
 
