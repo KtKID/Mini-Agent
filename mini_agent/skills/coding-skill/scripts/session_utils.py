@@ -5,11 +5,14 @@ Used by both claude_chat.py and summarize_sessions.py to avoid duplication.
 """
 
 import json
+import logging
 import re
 from pathlib import Path
 
 ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
 SESSION_FILE = ASSETS_DIR / "session.json"
+
+_log = logging.getLogger("mini_agent.coding")
 
 
 def _safe_id(user_id: str) -> str:
@@ -28,7 +31,9 @@ def load_sessions(user_id: str | None = None) -> dict:
     sf = get_session_file(user_id)
     if sf.exists():
         try:
-            return json.loads(sf.read_text(encoding="utf-8"))
+            result = json.loads(sf.read_text(encoding="utf-8"))
+            _log.debug(f"[LOAD] file={sf} user_id={user_id} count={len(result)}")
+            return result
         except (json.JSONDecodeError, OSError):
             return {}
     return {}
@@ -41,3 +46,4 @@ def save_sessions(sessions: dict, user_id: str | None = None) -> None:
         json.dumps(sessions, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    _log.debug(f"[SAVE] file={sf} user_id={user_id} count={len(sessions)}")

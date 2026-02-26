@@ -21,18 +21,53 @@ claude_chat.py - 格式化显示 Claude Code 的流式输出，支持多轮对�
 
 import sys
 import json
+import logging
+import os
 import subprocess
 import shutil
 import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from session_utils import (
     ASSETS_DIR, SESSION_FILE, _safe_id, get_session_file,
     load_sessions, save_sessions,
 )
+
+
+def _setup_coding_logger():
+    """Initialize coding logger based on environment variables. Returns a NullHandler logger if not enabled."""
+    logger = logging.getLogger("mini_agent.coding")
+    if os.environ.get("CODING_LOG_ENABLED") != "1":
+        logger.addHandler(logging.NullHandler())
+        return logger
+
+    if logger.handlers:
+        return logger
+
+    log_dir = Path(os.environ.get("CODING_LOG_DIR", "logs"))
+    log_dir.mkdir(parents=True, exist_ok=True)
+    level = getattr(logging, os.environ.get("CODING_LOG_LEVEL", "INFO"), logging.INFO)
+
+    logger.setLevel(level)
+    fh = RotatingFileHandler(
+        log_dir / "coding.log",
+        maxBytes=int(os.environ.get("CODING_LOG_MAX_BYTES", 10 * 1024 * 1024)),
+        backupCount=int(os.environ.get("CODING_LOG_BACKUP_COUNT", 5)),
+        encoding="utf-8",
+    )
+    fh.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    ))
+    logger.addHandler(fh)
+    return logger
+
+
+_log = _setup_coding_logger()
 
 
 # ── ANSI 颜色 ──────────────────────────────────────────────────────────────
@@ -98,6 +133,9 @@ def update_session(session_id: str, prompt: str, result: str,
         }
 
     save_sessions(sessions, user_id)
+    _log.debug(f"[SESSION_SAVE] file={get_session_file(user_id)} session_id={session_id} "
+               f"turns={sessions[session_id].get('turns', 0)} "
+               f"total_tokens={sessions[session_id].get('total_tokens', 0)}")
 
 
 def get_latest_session(user_id: str | None = None) -> str | None:
@@ -205,6 +243,8 @@ def run_claude(prompt: str, session_id: str | None = None,
     idle_timeout      → 空闲超时秒数（无输出超过此时间则终止进程）
     user_id           → 用户标识，用于 session 文件隔离
     """
+    _log.info(f"[RUN] user_id={user_id} session_id={session_id} "
+              f"idle_timeout={idle_timeout} prompt={prompt[:100]!r}")
     cmd = [
         "claude", "-p", prompt,
         "--output-format", "stream-json",
@@ -298,12 +338,14 @@ def run_claude(prompt: str, session_id: str | None = None,
 
     # 检查进程退出状态
     if timed_out:
+        _log.warning(f"[TIMEOUT] idle_timeout={idle_timeout} stderr={stderr_output.strip()[:500]!r}")
         if not turn.result:
             msg = f"[超时] claude 进程因空闲超时 ({idle_timeout}s) 被终止"
             if stderr_output and stderr_output.strip():
                 msg += f"\nstderr: {stderr_output.strip()[:500]}"
             turn.result = msg
     elif proc.returncode != 0:
+        _log.warning(f"[ERROR] returncode={proc.returncode} stderr={stderr_output.strip()[:500]!r}")
         err_snippet = stderr_output.strip()[:500] if stderr_output else "(无 stderr 输出)"
         print(f"\n{Color.RED}❌ claude 进程异常退出 (code={proc.returncode}){Color.RESET}")
         print(f"{Color.RED}{err_snippet}{Color.RESET}")
@@ -318,10 +360,14 @@ def run_claude(prompt: str, session_id: str | None = None,
     # 持久化 session 记录（优先用累计 token，即使 result 消息未收到也能保存）
     if turn.session_id:
         result_text = turn.result or "".join(turn.text)
+        inp_tokens = turn.cumulative_input_tokens or turn.usage.get("input_tokens", 0)
+        out_tokens = turn.cumulative_output_tokens or turn.usage.get("output_tokens", 0)
+        _log.info(f"[DONE] session_id={turn.session_id} "
+                  f"result={result_text[:200]!r} tokens={inp_tokens}↑{out_tokens}↓")
         update_session(
             turn.session_id, prompt, result_text,
-            input_tokens=turn.cumulative_input_tokens or turn.usage.get("input_tokens", 0),
-            output_tokens=turn.cumulative_output_tokens or turn.usage.get("output_tokens", 0),
+            input_tokens=inp_tokens,
+            output_tokens=out_tokens,
             user_id=user_id,
         )
 
@@ -448,7 +494,12 @@ def parse_args() -> tuple[str | None, str | None, bool, int, str | None]:
 
 # ── 主入口 ──────────────────────────────────────────────────────────────────
 def main() -> None:
+    _log.info(f"[START] argv={sys.argv}")
     resume_id, prompt, force_new, idle_timeout, user_id = parse_args()
+    prompt_repr = repr(prompt[:100]) if prompt else "None"
+    _log.info(f"[ARGS] user_id={user_id} resume_id={resume_id} "
+              f"prompt={prompt_repr} "
+              f"idle_timeout={idle_timeout} force_new={force_new}")
 
     if prompt:
         # 单次问答模式

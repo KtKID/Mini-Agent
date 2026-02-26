@@ -77,3 +77,16 @@ feishu:
   reconnect_initial_delay: 1.0  # Initial reconnect delay (seconds)
   reconnect_max_delay: 30.0  # Maximum reconnect delay (seconds)
   reconnect_max_retries: 10  # Maximum retry attempts
+
+# ===== Logging Configuration =====
+# Debug logging for Feishu ↔ Coding Skill communication chain
+# Records session data for bug verification and real-time debugging
+logging:
+  enabled: true              # Master switch: set false to disable all logging
+  log_dir: "logs"            # Log directory (relative to project root)
+  log_level: "INFO"          # DEBUG shows session file read/write details
+  feishu_logging: true       # Feishu message processing chain
+  coding_logging: true       # Coding Skill (claude_chat.py) execution chain
+  bash_logging: true         # BashTool command execution logs
+  max_bytes: 10485760        # Single file size limit (10MB)
+  backup_count: 5            # Number of rotated backup files to keep

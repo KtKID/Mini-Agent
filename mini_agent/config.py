@@ -70,6 +70,19 @@ class ToolsConfig(BaseModel):
     mcp: MCPConfig = Field(default_factory=MCPConfig)
 
 
+class LoggingConfig(BaseModel):
+    """Logging configuration"""
+
+    enabled: bool = True
+    log_dir: str = "logs"
+    log_level: str = "INFO"
+    feishu_logging: bool = True
+    coding_logging: bool = True
+    bash_logging: bool = True
+    max_bytes: int = 10 * 1024 * 1024  # 10MB
+    backup_count: int = 5
+
+
 class Config(BaseModel):
     """Main configuration class"""
 
@@ -77,6 +90,7 @@ class Config(BaseModel):
     agent: AgentConfig
     tools: ToolsConfig
     feishu: Optional["FeishuConfig"] = None  # Optional Feishu Skill configuration
+    logging: LoggingConfig = Field(default_factory=LoggingConfig)  # Logging configuration
 
     @classmethod
     def load(cls) -> "Config":
@@ -176,11 +190,25 @@ class Config(BaseModel):
                     import logging
                     logging.getLogger(__name__).warning(f"Failed to parse Feishu config: {e}")
 
+        # Parse logging configuration
+        logging_data = data.get("logging", {})
+        logging_config = LoggingConfig(
+            enabled=logging_data.get("enabled", True),
+            log_dir=logging_data.get("log_dir", "logs"),
+            log_level=logging_data.get("log_level", "INFO"),
+            feishu_logging=logging_data.get("feishu_logging", True),
+            coding_logging=logging_data.get("coding_logging", True),
+            bash_logging=logging_data.get("bash_logging", True),
+            max_bytes=logging_data.get("max_bytes", 10 * 1024 * 1024),
+            backup_count=logging_data.get("backup_count", 5),
+        )
+
         return cls(
             llm=llm_config,
             agent=agent_config,
             tools=tools_config,
             feishu=feishu_config,
+            logging=logging_config,
         )
 
     @staticmethod

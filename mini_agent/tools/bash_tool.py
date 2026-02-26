@@ -4,6 +4,8 @@ Supports both bash (Unix/Linux/macOS) and PowerShell (Windows).
 """
 
 import asyncio
+import logging
+import os
 import platform
 import re
 import time
@@ -13,6 +15,9 @@ from typing import Any
 from pydantic import Field, model_validator
 
 from .base import Tool, ToolResult
+
+_log = logging.getLogger("mini_agent.feishu")
+_bash_log_enabled = os.environ.get("BASH_LOG_ENABLED") == "1"
 
 
 class BashOutputResult(ToolResult):
@@ -330,6 +335,9 @@ Examples:
             elif timeout < 1:
                 timeout = 120
 
+            if _bash_log_enabled:
+                _log.info(f"[BASH_EXEC] cmd={command!r} timeout={timeout} bg={run_in_background}")
+
             # Prepare shell-specific command execution
             if self.is_windows:
                 # Windows: Use PowerShell with appropriate encoding
@@ -399,6 +407,8 @@ Examples:
                     stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
                 except asyncio.TimeoutError:
                     process.kill()
+                    if _bash_log_enabled:
+                        _log.warning(f"[BASH_TIMEOUT] cmd={command[:200]!r} timeout={timeout}")
                     error_msg = f"Command timed out after {timeout} seconds"
                     return BashOutputResult(
                         success=False,
@@ -411,6 +421,10 @@ Examples:
                 # Decode output
                 stdout_text = stdout.decode("utf-8", errors="replace")
                 stderr_text = stderr.decode("utf-8", errors="replace")
+
+                if _bash_log_enabled:
+                    _log.info(f"[BASH_DONE] exit_code={process.returncode} "
+                              f"stdout_len={len(stdout_text)} stderr_len={len(stderr_text)}")
 
                 # Create result (content auto-formatted by model_validator)
                 is_success = process.returncode == 0

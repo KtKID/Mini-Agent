@@ -13,6 +13,7 @@ Examples:
 import argparse
 import asyncio
 import logging
+import os
 import platform
 import subprocess
 import sys
@@ -624,6 +625,22 @@ async def run_agent(workspace_dir: Path, task: str = None):
         workspace_dir=str(workspace_dir),
     )
 
+    # 7.4. Inject logging environment variables for sub-processes
+    if config.logging.enabled:
+        log_config = config.logging
+        log_level_name = log_config.log_level.upper()
+        log_dir_abs = str(Path(log_config.log_dir).resolve())
+
+        if log_config.bash_logging:
+            os.environ["BASH_LOG_ENABLED"] = "1"
+
+        if log_config.coding_logging:
+            os.environ["CODING_LOG_ENABLED"] = "1"
+            os.environ["CODING_LOG_LEVEL"] = log_level_name
+            os.environ["CODING_LOG_DIR"] = log_dir_abs
+            os.environ["CODING_LOG_MAX_BYTES"] = str(log_config.max_bytes)
+            os.environ["CODING_LOG_BACKUP_COUNT"] = str(log_config.backup_count)
+
     # 7.5. Initialize and connect Long Connection Skills (e.g., Feishu)
     long_connection_registry = None
     if LONG_CONNECTION_AVAILABLE and FEISHU_SKILL_AVAILABLE:
@@ -652,6 +669,9 @@ async def run_agent(workspace_dir: Path, task: str = None):
 
                 # Agent 工厂函数：每个 session 创建独立的 Agent 实例
                 def make_agent(session_id: str = ""):
+                    if config.logging.enabled and config.logging.feishu_logging:
+                        logger.info(f"[FACTORY] session_id={session_id} "
+                                    f"user_context={'injected' if session_id else 'none'}")
                     agent_system_prompt = system_prompt
                     if session_id:
                         agent_system_prompt += (
@@ -681,6 +701,10 @@ async def run_agent(workspace_dir: Path, task: str = None):
                     session_id = chat_id or open_id
                     print(f"\n{Colors.BRIGHT_CYAN}[Feishu]{Colors.RESET} {Colors.DIM}{open_id}{Colors.RESET} › {msg_preview}")
 
+                    if config.logging.enabled and config.logging.feishu_logging:
+                        logger.info(f"[MSG_IN] open_id={open_id} chat_id={chat_id} "
+                                    f"session_id={session_id} msg={message[:100]!r}")
+
                     # 讨论模式判断：用 chat_id 区分会话，避免群聊和私聊互相干扰
                     if discussion_handler.is_active(session_id) or message.startswith("讨论 "):
                         print(f"{Colors.BRIGHT_BLUE}[Feishu]{Colors.RESET} {Colors.DIM}讨论模式 (session={session_id[:16]}...){Colors.RESET}")
@@ -692,16 +716,28 @@ async def run_agent(workspace_dir: Path, task: str = None):
                     print(f"{Colors.BRIGHT_BLUE}[Feishu]{Colors.RESET} {Colors.DIM}Agent 处理中...{Colors.RESET}")
                     session = feishu_skill._session_manager.get_or_create(session_id)
 
+                    if config.logging.enabled and config.logging.feishu_logging:
+                        logger.info(f"[SESSION] session_id={session_id} "
+                                    f"is_new={session.message_count==0} has_agent={session.agent is not None}")
+
                     if not session.agent:
                         return "抱歉，Agent 未初始化。"
 
                     session.agent.add_user_message(message)
-                    await session.agent.run()
+                    try:
+                        await session.agent.run()
+                    except Exception as e:
+                        if config.logging.enabled and config.logging.feishu_logging:
+                            logger.error(f"[MSG_ERR] session_id={session_id} error={e}")
+                        raise
                     # Get the last assistant message as response
                     for msg in reversed(session.agent.messages):
                         if msg.role == "assistant" and msg.content:
                             resp_preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
                             print(f"{Colors.GREEN}[Feishu]{Colors.RESET} {Colors.DIM}回复: {resp_preview}{Colors.RESET}")
+                            if config.logging.enabled and config.logging.feishu_logging:
+                                logger.info(f"[MSG_OUT] session_id={session_id} "
+                                            f"resp_len={len(msg.content)} resp={msg.content[:100]!r}")
                             return msg.content
                     return "抱歉，我无法生成回复。"
 
