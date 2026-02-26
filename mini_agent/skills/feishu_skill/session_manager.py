@@ -86,7 +86,7 @@ class SessionManager:
 
         session = FeishuSession(open_id=session_id)
         if self._agent_factory:
-            session.agent = self._agent_factory(session_id)
+            session.agent = self._agent_factory(session_id=session_id)
             logger.info(f"SessionManager: Created new session with Agent for {session_id}")
         else:
             logger.info(f"SessionManager: Created new session (no agent) for {session_id}")

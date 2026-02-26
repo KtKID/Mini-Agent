@@ -21,7 +21,6 @@ claude_chat.py - 格式化显示 Claude Code 的流式输出，支持多轮对�
 
 import sys
 import json
-import re
 import subprocess
 import shutil
 import threading
@@ -30,22 +29,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-
-# ── session.json 路径 ─────────────────────────────────────────────────────
-ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
-SESSION_FILE = ASSETS_DIR / "session.json"
-
-
-def _safe_id(user_id: str) -> str:
-    """将 user_id 转为安全的文件名片段（仅保留字母数字和下划线/连字符）。"""
-    return re.sub(r'[^a-zA-Z0-9_\-]', '_', user_id)
-
-
-def get_session_file(user_id: str | None = None) -> Path:
-    """根据 user_id 返回对应的 session 文件路径。无 user_id 则返回全局文件（向后兼容）。"""
-    if user_id:
-        return ASSETS_DIR / f"session_{_safe_id(user_id)}.json"
-    return SESSION_FILE
+from session_utils import (
+    ASSETS_DIR, SESSION_FILE, _safe_id, get_session_file,
+    load_sessions, save_sessions,
+)
 
 
 # ── ANSI 颜色 ──────────────────────────────────────────────────────────────
@@ -77,24 +64,7 @@ class Turn:
     cumulative_output_tokens: int = 0
 
 
-# ── session.json 读写 ──────────────────────────────────────────────────────
-def load_sessions(user_id: str | None = None) -> dict:
-    sf = get_session_file(user_id)
-    if sf.exists():
-        try:
-            return json.loads(sf.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return {}
-    return {}
-
-
-def save_sessions(sessions: dict, user_id: str | None = None) -> None:
-    ASSETS_DIR.mkdir(parents=True, exist_ok=True)
-    sf = get_session_file(user_id)
-    sf.write_text(
-        json.dumps(sessions, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+# ── session.json 读写（高层函数） ────────────────────────────────────────────
 
 
 def update_session(session_id: str, prompt: str, result: str,
@@ -279,6 +249,19 @@ def run_claude(prompt: str, session_id: str | None = None,
         text=True,
         bufsize=1,
     ) as proc:
+        # 异步 drain stderr 防止管道缓冲区满导致死锁
+        stderr_output = ""
+
+        def _drain_stderr(stream):
+            nonlocal stderr_output
+            try:
+                stderr_output = stream.read() or ""
+            except Exception:
+                pass
+
+        stderr_thread = threading.Thread(target=_drain_stderr, args=(proc.stderr,), daemon=True)
+        stderr_thread.start()
+
         # 启动 watchdog 守护线程
         wd_thread = threading.Thread(target=_watchdog, args=(proc, idle_timeout), daemon=True)
         wd_thread.start()
@@ -303,8 +286,8 @@ def run_claude(prompt: str, session_id: str | None = None,
                     pass
             process_line(raw_line, turn)
 
-        # 读取 stderr
-        stderr_output = proc.stderr.read() or ""
+        # 等待 stderr drain 完成
+        stderr_thread.join(timeout=5)
 
     # 停止 watchdog
     watchdog_stop.set()
@@ -316,7 +299,10 @@ def run_claude(prompt: str, session_id: str | None = None,
     # 检查进程退出状态
     if timed_out:
         if not turn.result:
-            turn.result = f"[超时] claude 进程因空闲超时 ({idle_timeout}s) 被终止"
+            msg = f"[超时] claude 进程因空闲超时 ({idle_timeout}s) 被终止"
+            if stderr_output and stderr_output.strip():
+                msg += f"\nstderr: {stderr_output.strip()[:500]}"
+            turn.result = msg
     elif proc.returncode != 0:
         err_snippet = stderr_output.strip()[:500] if stderr_output else "(无 stderr 输出)"
         print(f"\n{Color.RED}❌ claude 进程异常退出 (code={proc.returncode}){Color.RESET}")
@@ -444,7 +430,8 @@ def parse_args() -> tuple[str | None, str | None, bool, int, str | None]:
             i += 1
         elif args[i] == "--idle-timeout" and i + 1 < len(args):
             try:
-                idle_timeout = int(args[i + 1])
+                val = int(args[i + 1])
+                idle_timeout = max(30, min(val, 600))
             except ValueError:
                 pass
             i += 2

@@ -57,3 +57,17 @@ def test_parse_all_combined(cc, monkeypatch):
     assert force_new is True
     assert prompt == "complex question"
     assert resume_id is None
+
+
+def test_idle_timeout_clamped_low(cc, monkeypatch):
+    """--idle-timeout below 30 is clamped to 30."""
+    monkeypatch.setattr(sys, "argv", ["prog", "--idle-timeout", "5", "q"])
+    _, _, _, idle_timeout, _ = cc.parse_args()
+    assert idle_timeout == 30
+
+
+def test_idle_timeout_clamped_high(cc, monkeypatch):
+    """--idle-timeout above 600 is clamped to 600."""
+    monkeypatch.setattr(sys, "argv", ["prog", "--idle-timeout", "9999", "q"])
+    _, _, _, idle_timeout, _ = cc.parse_args()
+    assert idle_timeout == 600
