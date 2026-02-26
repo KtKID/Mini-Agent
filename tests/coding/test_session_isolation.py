@@ -121,3 +121,30 @@ def test_handle_sessions_uses_user_id(cc, tmp_assets_dir, capsys):
     cc.handle_command("/sessions", None, user_id="B")
     out_b = capsys.readouterr().out
     assert "暂无" in out_b
+
+
+# ── D. Edge / boundary cases ────────────────────────────────────────────
+
+
+def test_safe_id_empty_string(cc):
+    """Empty string → remains empty (edge case)."""
+    assert cc._safe_id("") == ""
+
+
+def test_safe_id_all_special(cc):
+    """All-special-char input → all replaced with underscores."""
+    assert cc._safe_id("@#$%") == "____"
+
+
+def test_load_sessions_corrupt_file(cc, tmp_assets_dir):
+    """Corrupt (non-JSON) session file → returns empty dict."""
+    (tmp_assets_dir / "session.json").write_text("not json!!!", encoding="utf-8")
+    assert cc.load_sessions() == {}
+
+
+def test_update_session_long_result_truncated(cc, tmp_assets_dir):
+    """Result > 200 chars → last_reply_snippet truncated to 200."""
+    long_result = "x" * 1000
+    cc.update_session("sid1", "q", long_result, user_id="u1")
+    sessions = cc.load_sessions(user_id="u1")
+    assert len(sessions["sid1"]["last_reply_snippet"]) == 200
