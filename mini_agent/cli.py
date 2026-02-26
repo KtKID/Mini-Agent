@@ -651,7 +651,14 @@ async def run_agent(workspace_dir: Path, task: str = None):
                 )
 
                 # Agent 工厂函数：每个 session 创建独立的 Agent 实例
-                def make_agent():
+                def make_agent(session_id: str = ""):
+                    agent_system_prompt = system_prompt
+                    if session_id:
+                        agent_system_prompt += (
+                            f"\n\n## User Context\n"
+                            f"Current user identifier: `{session_id}`\n"
+                            f"When using coding-skill, you MUST include `--user {session_id}` parameter."
+                        )
                     return Agent(
                         llm_client=LLMClient(
                             api_key=config.llm.api_key,
@@ -659,7 +666,7 @@ async def run_agent(workspace_dir: Path, task: str = None):
                             api_base=config.llm.api_base,
                             model=config.llm.model,
                         ),
-                        system_prompt=system_prompt,
+                        system_prompt=agent_system_prompt,
                         tools=tools,
                         max_steps=config.agent.max_steps,
                         workspace_dir=str(workspace_dir),

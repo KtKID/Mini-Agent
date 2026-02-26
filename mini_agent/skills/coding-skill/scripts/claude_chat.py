@@ -21,6 +21,7 @@ claude_chat.py - 格式化显示 Claude Code 的流式输出，支持多轮对�
 
 import sys
 import json
+import re
 import subprocess
 import shutil
 import threading
@@ -33,6 +34,18 @@ from pathlib import Path
 # ── session.json 路径 ─────────────────────────────────────────────────────
 ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
 SESSION_FILE = ASSETS_DIR / "session.json"
+
+
+def _safe_id(user_id: str) -> str:
+    """将 user_id 转为安全的文件名片段（仅保留字母数字和下划线/连字符）。"""
+    return re.sub(r'[^a-zA-Z0-9_\-]', '_', user_id)
+
+
+def get_session_file(user_id: str | None = None) -> Path:
+    """根据 user_id 返回对应的 session 文件路径。无 user_id 则返回全局文件（向后兼容）。"""
+    if user_id:
+        return ASSETS_DIR / f"session_{_safe_id(user_id)}.json"
+    return SESSION_FILE
 
 
 # ── ANSI 颜色 ──────────────────────────────────────────────────────────────
@@ -65,27 +78,30 @@ class Turn:
 
 
 # ── session.json 读写 ──────────────────────────────────────────────────────
-def load_sessions() -> dict:
-    if SESSION_FILE.exists():
+def load_sessions(user_id: str | None = None) -> dict:
+    sf = get_session_file(user_id)
+    if sf.exists():
         try:
-            return json.loads(SESSION_FILE.read_text(encoding="utf-8"))
+            return json.loads(sf.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return {}
     return {}
 
 
-def save_sessions(sessions: dict) -> None:
+def save_sessions(sessions: dict, user_id: str | None = None) -> None:
     ASSETS_DIR.mkdir(parents=True, exist_ok=True)
-    SESSION_FILE.write_text(
+    sf = get_session_file(user_id)
+    sf.write_text(
         json.dumps(sessions, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
 
 def update_session(session_id: str, prompt: str, result: str,
-                   input_tokens: int = 0, output_tokens: int = 0) -> None:
+                   input_tokens: int = 0, output_tokens: int = 0,
+                   user_id: str | None = None) -> None:
     """每轮对话后更新 session 记录。使用累计 token 计数。"""
-    sessions = load_sessions()
+    sessions = load_sessions(user_id)
 
     # 从 result 截取前 200 字符作为最近回复摘要
     snippet = result.strip()[:200] if result else ""
@@ -111,12 +127,12 @@ def update_session(session_id: str, prompt: str, result: str,
             "total_tokens": input_tokens + output_tokens,
         }
 
-    save_sessions(sessions)
+    save_sessions(sessions, user_id)
 
 
-def get_latest_session() -> str | None:
-    """从 session.json 中取 updated_at 最新的 session_id。"""
-    sessions = load_sessions()
+def get_latest_session(user_id: str | None = None) -> str | None:
+    """从 session 文件中取 updated_at 最新的 session_id。"""
+    sessions = load_sessions(user_id)
     if not sessions:
         return None
     return max(sessions, key=lambda sid: sessions[sid].get("updated_at", ""))
@@ -212,11 +228,12 @@ def _print_tool_result(r: dict) -> None:
 
 # ── 调用 claude CLI ─────────────────────────────────────────────────────────
 def run_claude(prompt: str, session_id: str | None = None,
-               idle_timeout: int = 120) -> Turn:
+               idle_timeout: int = 120, user_id: str | None = None) -> Turn:
     """
     session_id=None   → 新 session
     session_id="..."  → 通过 --resume 继续指定 session
     idle_timeout      → 空闲超时秒数（无输出超过此时间则终止进程）
+    user_id           → 用户标识，用于 session 文件隔离
     """
     cmd = [
         "claude", "-p", prompt,
@@ -319,6 +336,7 @@ def run_claude(prompt: str, session_id: str | None = None,
             turn.session_id, prompt, result_text,
             input_tokens=turn.cumulative_input_tokens or turn.usage.get("input_tokens", 0),
             output_tokens=turn.cumulative_output_tokens or turn.usage.get("output_tokens", 0),
+            user_id=user_id,
         )
 
     return turn
@@ -348,7 +366,8 @@ def _print_summary(turn: Turn) -> None:
 
 
 # ── 内置命令处理 ────────────────────────────────────────────────────────────
-def handle_command(cmd: str, session_id: str | None) -> tuple[bool, str | None]:
+def handle_command(cmd: str, session_id: str | None,
+                   user_id: str | None = None) -> tuple[bool, str | None]:
     """
     返回 (handled, new_session_id)
     handled=True 表示已处理，不需要发给 claude
@@ -367,7 +386,7 @@ def handle_command(cmd: str, session_id: str | None) -> tuple[bool, str | None]:
         return True, session_id
 
     if cmd_lower == "/sessions":
-        sessions = load_sessions()
+        sessions = load_sessions(user_id)
         if not sessions:
             print(f"{Color.GRAY}暂无保存的 session{Color.RESET}")
         else:
@@ -397,20 +416,22 @@ def handle_command(cmd: str, session_id: str | None) -> tuple[bool, str | None]:
 
 
 # ── 参数解析 ────────────────────────────────────────────────────────────────
-def parse_args() -> tuple[str | None, str | None, bool, int]:
+def parse_args() -> tuple[str | None, str | None, bool, int, str | None]:
     """
     解析命令行参数。
 
-    返回 (resume_session_id, prompt, force_new, idle_timeout)
+    返回 (resume_session_id, prompt, force_new, idle_timeout, user_id)
     - 都为 None 且 force_new=False → 交互模式（自动恢复最新 session）
     - prompt 有值 → 单次模式
     - force_new=True → 强制新建 session
     - idle_timeout → 空闲超时秒数（默认 120）
+    - user_id → 用户标识，用于 session 文件隔离
     """
     args = sys.argv[1:]
     resume_id = None
     force_new = False
     idle_timeout = 120
+    user_id = None
     prompt_parts = []
 
     i = 0
@@ -427,17 +448,20 @@ def parse_args() -> tuple[str | None, str | None, bool, int]:
             except ValueError:
                 pass
             i += 2
+        elif args[i] == "--user" and i + 1 < len(args):
+            user_id = args[i + 1]
+            i += 2
         else:
             prompt_parts.append(args[i])
             i += 1
 
     prompt = " ".join(prompt_parts) if prompt_parts else None
-    return resume_id, prompt, force_new, idle_timeout
+    return resume_id, prompt, force_new, idle_timeout, user_id
 
 
 # ── 主入口 ──────────────────────────────────────────────────────────────────
 def main() -> None:
-    resume_id, prompt, force_new, idle_timeout = parse_args()
+    resume_id, prompt, force_new, idle_timeout, user_id = parse_args()
 
     if prompt:
         # 单次问答模式
@@ -447,8 +471,8 @@ def main() -> None:
             session_id = resume_id
         else:
             # 默认继续上次 session
-            session_id = get_latest_session()
-        run_claude(prompt, session_id=session_id, idle_timeout=idle_timeout)
+            session_id = get_latest_session(user_id)
+        run_claude(prompt, session_id=session_id, idle_timeout=idle_timeout, user_id=user_id)
         return
 
     # 交互模式
@@ -463,10 +487,10 @@ def main() -> None:
     elif resume_id:
         session_id = resume_id
     else:
-        session_id = get_latest_session()
+        session_id = get_latest_session(user_id)
 
     if session_id:
-        sessions = load_sessions()
+        sessions = load_sessions(user_id)
         info = sessions.get(session_id, {})
         summary = info.get("summary") or info.get("first_prompt", "")
         print(f"{Color.GREEN}↻ 已恢复上次对话: {Color.RESET}{summary}")
@@ -495,12 +519,12 @@ def main() -> None:
 
         # 内置命令
         if user_input.startswith("/"):
-            handled, session_id = handle_command(user_input, session_id)
+            handled, session_id = handle_command(user_input, session_id, user_id=user_id)
             if handled:
                 continue
 
         # 发送给 claude
-        turn = run_claude(user_input, session_id=session_id, idle_timeout=idle_timeout)
+        turn = run_claude(user_input, session_id=session_id, idle_timeout=idle_timeout, user_id=user_id)
 
         if turn.session_id:
             session_id = turn.session_id

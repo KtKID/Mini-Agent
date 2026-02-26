@@ -7,21 +7,32 @@ description: 当用户提到 coding、编程、写代码、claude code、代码�
 
 ## Overview
 
-通过 BashTool 调用 `scripts/claude_chat.py` 与 Claude Code CLI 交互。所有 session 自动持久化到 `assets/session.json`。
+通过 BashTool 调用 `scripts/claude_chat.py` 与 Claude Code CLI 交互。所有 session 自动持久化到 `assets/session.json`（或按用户隔离到 `assets/session_<user_id>.json`）。
 
 ## 前置条件
 
 - `claude` CLI 在 PATH 中
 - Python 3.11+
 
+## 参数列表
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `--user <id>` | 用户标识，session 按用户隔离到独立文件 | 无（使用全局 session.json） |
+| `--new` / `-n` | 强制新建 session | - |
+| `--resume <id>` / `-r <id>` | 恢复指定 session | - |
+| `--idle-timeout <seconds>` | 空闲超时秒数 | 120 |
+
+> **`--user` 来源**：Agent system prompt 的 User Context 段会自动注入当前用户标识，调用时须透传。
+
 ## 调用方式
 
 ### 默认：继续上次对话
 
-不传任何 session 参数，脚本自动从 `assets/session.json` 读取最近的 session 继续对话：
+不传任何 session 参数，脚本自动从用户的 session 文件读取最近的 session 继续对话：
 
 ```bash
-python scripts/claude_chat.py "用户的问题"
+python scripts/claude_chat.py --user <user_id> "用户的问题"
 ```
 
 ### 新建 session
@@ -29,15 +40,15 @@ python scripts/claude_chat.py "用户的问题"
 传 `--new` 强制新建：
 
 ```bash
-python scripts/claude_chat.py --new "用户的问题"
+python scripts/claude_chat.py --user <user_id> --new "用户的问题"
 ```
 
 ### 恢复指定 session
 
-从 `assets/session.json` 中找到目标 session_id，传 `--resume`：
+从 session 文件中找到目标 session_id，传 `--resume`：
 
 ```bash
-python scripts/claude_chat.py --resume <session_id> "用户的问题"
+python scripts/claude_chat.py --user <user_id> --resume <session_id> "用户的问题"
 ```
 
 ## 新建/续接判断规则
@@ -74,7 +85,7 @@ SESSION_ID: <完整session_id>
 
 ## Session 持久化
 
-`assets/session.json` 以 session_id 为 key，记录每个对话的元信息：
+session 文件以 session_id 为 key，记录每个对话的元信息。传 `--user` 时文件为 `assets/session_<user_id>.json`，不传则为 `assets/session.json`（向后兼容）：
 
 ```json
 {
@@ -96,9 +107,11 @@ SESSION_ID: <完整session_id>
 ## 摘要脚本
 
 ```bash
-python scripts/summarize_sessions.py           # 为缺少摘要的 session 生成概要
-python scripts/summarize_sessions.py --all      # 重新生成所有摘要
-python scripts/summarize_sessions.py --session <id>  # 只总结指定 session
+python scripts/summarize_sessions.py                    # 为缺少摘要的 session 生成概要（全局文件）
+python scripts/summarize_sessions.py --user <id>        # 处理指定用户的 session 文件
+python scripts/summarize_sessions.py --all              # 重新生成所有摘要
+python scripts/summarize_sessions.py --all-users        # 遍历所有用户的 session 文件
+python scripts/summarize_sessions.py --session <id>     # 只总结指定 session
 ```
 
 ## 限制
