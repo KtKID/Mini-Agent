@@ -105,6 +105,22 @@ python scripts/summarize_sessions.py --session <id>  # 只总结指定 session
 
 通过 BashTool 调用时无法流式显示，等进程结束后一次性返回完整输出。
 
+## 超时注意
+
+编程任务通常耗时较长，BashTool 默认 120s 超时可能不够。**调用 coding-skill 时，BashTool 必须设置 `timeout=300`**（最大可设 600）。
+
+示例：
+```bash
+# BashTool 调用时务必加 timeout
+BashTool(command="python scripts/claude_chat.py '帮我重构这个模块'", timeout=300)
+```
+
+`claude_chat.py` 自带空闲超时保护（`--idle-timeout`，默认 120s）：当 claude CLI 超过指定秒数没有任何输出时，自动终止进程。可按需调整：
+
+```bash
+python scripts/claude_chat.py --idle-timeout 180 "复杂的重构任务"
+```
+
 ## 参考文档
 
 用户手动使用的交互模式、内置命令等详见 references/user_guide.md。

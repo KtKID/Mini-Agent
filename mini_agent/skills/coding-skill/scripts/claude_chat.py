@@ -23,6 +23,8 @@ import sys
 import json
 import subprocess
 import shutil
+import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -209,10 +211,12 @@ def _print_tool_result(r: dict) -> None:
 
 
 # ── 调用 claude CLI ─────────────────────────────────────────────────────────
-def run_claude(prompt: str, session_id: str | None = None) -> Turn:
+def run_claude(prompt: str, session_id: str | None = None,
+               idle_timeout: int = 120) -> Turn:
     """
     session_id=None   → 新 session
     session_id="..."  → 通过 --resume 继续指定 session
+    idle_timeout      → 空闲超时秒数（无输出超过此时间则终止进程）
     """
     cmd = [
         "claude", "-p", prompt,
@@ -231,6 +235,25 @@ def run_claude(prompt: str, session_id: str | None = None) -> Turn:
 
     turn      = Turn()
     in_stream = False
+    timed_out = False
+
+    # 空闲超时 watchdog
+    last_output_time = time.monotonic()
+    watchdog_stop = threading.Event()
+
+    def _watchdog(proc, timeout):
+        nonlocal timed_out
+        while not watchdog_stop.is_set():
+            if time.monotonic() - last_output_time > timeout:
+                timed_out = True
+                print(f"\n{Color.RED}⏰ 空闲超时 ({timeout}s 无输出)，正在终止 claude 进程…{Color.RESET}")
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                return
+            watchdog_stop.wait(1)
 
     with subprocess.Popen(
         cmd,
@@ -239,7 +262,12 @@ def run_claude(prompt: str, session_id: str | None = None) -> Turn:
         text=True,
         bufsize=1,
     ) as proc:
+        # 启动 watchdog 守护线程
+        wd_thread = threading.Thread(target=_watchdog, args=(proc, idle_timeout), daemon=True)
+        wd_thread.start()
+
         for raw_line in proc.stdout:
+            last_output_time = time.monotonic()
             stripped = raw_line.strip()
             if stripped:
                 try:
@@ -261,11 +289,18 @@ def run_claude(prompt: str, session_id: str | None = None) -> Turn:
         # 读取 stderr
         stderr_output = proc.stderr.read() or ""
 
+    # 停止 watchdog
+    watchdog_stop.set()
+    wd_thread.join(timeout=2)
+
     if in_stream:
         print()
 
     # 检查进程退出状态
-    if proc.returncode != 0:
+    if timed_out:
+        if not turn.result:
+            turn.result = f"[超时] claude 进程因空闲超时 ({idle_timeout}s) 被终止"
+    elif proc.returncode != 0:
         err_snippet = stderr_output.strip()[:500] if stderr_output else "(无 stderr 输出)"
         print(f"\n{Color.RED}❌ claude 进程异常退出 (code={proc.returncode}){Color.RESET}")
         print(f"{Color.RED}{err_snippet}{Color.RESET}")
@@ -362,18 +397,20 @@ def handle_command(cmd: str, session_id: str | None) -> tuple[bool, str | None]:
 
 
 # ── 参数解析 ────────────────────────────────────────────────────────────────
-def parse_args() -> tuple[str | None, str | None, bool]:
+def parse_args() -> tuple[str | None, str | None, bool, int]:
     """
     解析命令行参数。
 
-    返回 (resume_session_id, prompt, force_new)
+    返回 (resume_session_id, prompt, force_new, idle_timeout)
     - 都为 None 且 force_new=False → 交互模式（自动恢复最新 session）
     - prompt 有值 → 单次模式
     - force_new=True → 强制新建 session
+    - idle_timeout → 空闲超时秒数（默认 120）
     """
     args = sys.argv[1:]
     resume_id = None
     force_new = False
+    idle_timeout = 120
     prompt_parts = []
 
     i = 0
@@ -384,17 +421,23 @@ def parse_args() -> tuple[str | None, str | None, bool]:
         elif args[i] in ("--new", "-n"):
             force_new = True
             i += 1
+        elif args[i] == "--idle-timeout" and i + 1 < len(args):
+            try:
+                idle_timeout = int(args[i + 1])
+            except ValueError:
+                pass
+            i += 2
         else:
             prompt_parts.append(args[i])
             i += 1
 
     prompt = " ".join(prompt_parts) if prompt_parts else None
-    return resume_id, prompt, force_new
+    return resume_id, prompt, force_new, idle_timeout
 
 
 # ── 主入口 ──────────────────────────────────────────────────────────────────
 def main() -> None:
-    resume_id, prompt, force_new = parse_args()
+    resume_id, prompt, force_new, idle_timeout = parse_args()
 
     if prompt:
         # 单次问答模式
@@ -405,7 +448,7 @@ def main() -> None:
         else:
             # 默认继续上次 session
             session_id = get_latest_session()
-        run_claude(prompt, session_id=session_id)
+        run_claude(prompt, session_id=session_id, idle_timeout=idle_timeout)
         return
 
     # 交互模式
@@ -457,7 +500,7 @@ def main() -> None:
                 continue
 
         # 发送给 claude
-        turn = run_claude(user_input, session_id=session_id)
+        turn = run_claude(user_input, session_id=session_id, idle_timeout=idle_timeout)
 
         if turn.session_id:
             session_id = turn.session_id
