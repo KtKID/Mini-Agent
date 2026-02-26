@@ -10,24 +10,24 @@ from pathlib import Path
 from logging.handlers import RotatingFileHandler
 from datetime import datetime
 
+from mini_agent.config import LOG_DIR
 
-def setup_feishu_logging(log_dir: str = "logs", log_level: int = logging.INFO) -> logging.Logger:
+
+def setup_feishu_logging(log_level: int = logging.INFO) -> logging.Logger:
     """
     配置 Feishu 日志到独立文件。
 
     Args:
-        log_dir: 日志目录
         log_level: 日志级别
 
     Returns:
         配置好的 logger
     """
     # 创建日志目录
-    log_path = Path(log_dir)
-    log_path.mkdir(parents=True, exist_ok=True)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
 
     # Feishu 日志文件
-    feishu_log_file = log_path / "feishu.log"
+    feishu_log_file = LOG_DIR / "feishu.log"
 
     # 创建 logger
     logger = logging.getLogger("mini_agent.feishu")

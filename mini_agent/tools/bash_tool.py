@@ -16,8 +16,39 @@ from pydantic import Field, model_validator
 
 from .base import Tool, ToolResult
 
-_log = logging.getLogger("mini_agent.feishu")
-_bash_log_enabled = os.environ.get("BASH_LOG_ENABLED") == "1"
+_log = logging.getLogger("mini_agent.bash")
+_log_initialized = False
+
+
+def _is_bash_log_enabled() -> bool:
+    """运行时检查环境变量，避免模块加载时固化。"""
+    return os.environ.get("BASH_LOG_ENABLED") == "1"
+
+
+def _ensure_bash_logger():
+    """延迟初始化 bash logger，写入 LOG_DIR/bash.log。"""
+    global _log_initialized
+    if _log_initialized:
+        return
+    _log_initialized = True
+
+    from logging.handlers import RotatingFileHandler
+    from mini_agent.config import LOG_DIR
+
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+    _log.setLevel(logging.DEBUG)
+    fh = RotatingFileHandler(
+        LOG_DIR / "bash.log",
+        maxBytes=10 * 1024 * 1024,
+        backupCount=5,
+        encoding="utf-8",
+    )
+    fh.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    ))
+    _log.addHandler(fh)
 
 
 class BashOutputResult(ToolResult):
@@ -335,7 +366,8 @@ Examples:
             elif timeout < 1:
                 timeout = 120
 
-            if _bash_log_enabled:
+            if _is_bash_log_enabled():
+                _ensure_bash_logger()
                 _log.info(f"[BASH_EXEC] cmd={command!r} timeout={timeout} bg={run_in_background}")
 
             # Prepare shell-specific command execution
@@ -407,7 +439,7 @@ Examples:
                     stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
                 except asyncio.TimeoutError:
                     process.kill()
-                    if _bash_log_enabled:
+                    if _is_bash_log_enabled():
                         _log.warning(f"[BASH_TIMEOUT] cmd={command[:200]!r} timeout={timeout}")
                     error_msg = f"Command timed out after {timeout} seconds"
                     return BashOutputResult(
@@ -422,7 +454,7 @@ Examples:
                 stdout_text = stdout.decode("utf-8", errors="replace")
                 stderr_text = stderr.decode("utf-8", errors="replace")
 
-                if _bash_log_enabled:
+                if _is_bash_log_enabled():
                     _log.info(f"[BASH_DONE] exit_code={process.returncode} "
                               f"stdout_len={len(stdout_text)} stderr_len={len(stderr_text)}")
 

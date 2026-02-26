@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .config import LOG_DIR
 from .schema import Message, ToolCall
 
 
@@ -21,8 +22,7 @@ class AgentLogger:
 
         Logs are stored in ~/.mini-agent/log/ directory
         """
-        # Use ~/.mini-agent/log/ directory for logs
-        self.log_dir = Path.home() / ".mini-agent" / "log"
+        self.log_dir = LOG_DIR
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.log_file = None
         self.log_index = 0

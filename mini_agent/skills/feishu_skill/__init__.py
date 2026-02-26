@@ -104,9 +104,10 @@ class FeishuSkill(LongConnectionPlatform):
     def _ws_client_thread(self) -> None:
         """在独立线程中运行飞书 WebSocket 客户端。"""
         try:
-            # 创建事件处理器（SDK 自动处理 verification token）
+            # 创建事件处理器（SDK 需要 encrypt_key 和 verification_token）
             handler_builder = EventDispatcherHandler.builder(
-                self.config.encrypt_key or ""
+                self.config.encrypt_key or "",
+                self.config.verification_token or "",
             )
 
             # 注册消息接收事件处理

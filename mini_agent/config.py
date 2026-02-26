@@ -9,6 +9,9 @@ from typing import Optional
 import yaml
 from pydantic import BaseModel, Field
 
+# 统一日志目录：所有日志文件（agent_run, feishu, bash, coding）均写入此目录
+LOG_DIR = Path.home() / ".mini-agent" / "log"
+
 # Import FeishuConfig if available (optional dependency)
 try:
     from mini_agent.skills.feishu_skill.config import FeishuConfig

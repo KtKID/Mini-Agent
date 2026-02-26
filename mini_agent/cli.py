@@ -31,7 +31,7 @@ from prompt_toolkit.styles import Style
 
 from mini_agent import LLMClient
 from mini_agent.agent import Agent
-from mini_agent.config import Config
+from mini_agent.config import Config, LOG_DIR
 from mini_agent.schema import LLMProvider
 from mini_agent.tools.base import Tool
 from mini_agent.tools.bash_tool import BashKillTool, BashOutputTool, BashTool
@@ -93,7 +93,7 @@ class Colors:
 
 def get_log_directory() -> Path:
     """Get the log directory path."""
-    return Path.home() / ".mini-agent" / "log"
+    return LOG_DIR
 
 
 def show_log_directory(open_file_manager: bool = True) -> None:
@@ -629,7 +629,7 @@ async def run_agent(workspace_dir: Path, task: str = None):
     if config.logging.enabled:
         log_config = config.logging
         log_level_name = log_config.log_level.upper()
-        log_dir_abs = str(Path(log_config.log_dir).resolve())
+        log_dir_abs = str(LOG_DIR)
 
         if log_config.bash_logging:
             os.environ["BASH_LOG_ENABLED"] = "1"
